@@ -43,67 +43,15 @@ class ChannelMask(nn.Module):
         return grad_input
 
 
-
-
-
-class MixedOperation(nn.Module):
-    def __init__(self, in_channels, out_channels, stride):
-        super(MixedOperation, self).__init__()
-
-        self.conv3x3 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.conv5x5 = nn.Conv2d(in_channels, out_channels, kernel_size=5, stride=stride, padding=2, bias=False)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=stride, padding=1)
-
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-
-        self.alpha = nn.Parameter(torch.zeros(3))
+class ResolutionSubsampling(nn.Module):
+    def __init__(self, subsampling_factor):
+        super(ResolutionSubsampling, self).__init__()
+        self.subsampling_factor = subsampling_factor
 
     def forward(self, x):
-        weights = nn.functional.softmax(self.alpha, dim=0)
-
-        x_conv3x3 = self.relu(self.bn(self.conv3x3(x)))
-        x_conv5x5 = self.relu(self.bn(self.conv5x5(x)))
-        x_maxpool = self.maxpool(x)
-
-        out = weights[0] * x_conv3x3 + weights[1] * x_conv5x5 + weights[2] * x_maxpool
-
-        return out
-
-
-# class FBNetBlock(nn.Module):
-#     def __init__(self, in_channels, max_out_channels, stride):
-#         super(FBNetBlock, self).__init__()
-
-#         self.channel_mask = ChannelMask(in_channels, max_out_channels)
-#         self.mixed_op = MixedOperation(in_channels, max_out_channels, stride)
-#         self.resolution_subsampling = ResolutionSubsampling()
-
-#     def forward(self, x, out_channels, output_height, output_width):
-#         x = self.channel_mask(x, out_channels)
-#         x = self.mixed_op(x)
-#         x = self.resolution_subsampling(x, output_height, output_width)
-
-#         return x
-
-
-# class FBNetV2Example(nn.Module):
-#     def __init__(self, num_classes=10):
-#         super(FBNetV2Example, self).__init__()
-
-#         self.block1 = FBNetBlock(3, 64, stride=1)
-#         self.block2 = FBNetBlock(64, 128, stride=2)
-#         self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
-#         self.fc = nn.Linear(128, num_classes)
-
-#     def forward(self, x, block1_channels, block2_channels, block2_height, block2_width):
-#         x = self.block1(x, block1_channels, x.shape[2], x.shape[3])
-#         x = self.block2(x, block2_channels, block2_height, block2_width)
-#         x = self.avg_pool(x)
-#         x = x.view(x.size(0), -1)
-#         x = self.fc(x)
-
-#         return x
+        if self.subsampling_factor > 1:
+            x = nn.functional.avg_pool2d(x, kernel_size=self.subsampling_factor, stride=self.subsampling_factor)
+        return x
 
 
 class SmartZeroPadding(nn.Module):
@@ -143,22 +91,72 @@ class DilatedConvolution(nn.Module):
         return self.conv(x)
 
 
-a = torch.randn(5, 16, 224, 224)
-# a = torch.randn(1, 1, 4, 4)
-# net = SmartZeroPadding()
-# net(a, 8, 8)
+class FBNetV2BasicSearchBlock(nn.Module):
+    def __init__(self, in_channels, max_out_channels, num_masks, conv_kernel_configs, subsampling_factors, target_height, target_width):
+        super(FBNetV2BasicSearchBlock, self).__init__()
 
-# a = a.reshape(1, -1, 16)
+        self.channel_mask = ChannelMask(in_channels, max_out_channels, num_masks)
 
-# create tensor b with appropriate shape
-# b = torch.randn(16, 64)
+        # Initialize resolution subsampling modules and their corresponding weights
+        self.resolution_subsampling_weights = nn.Parameter(torch.zeros(len(subsampling_factors)))
+        self.resolution_subsampling_modules = nn.ModuleList([
+            ResolutionSubsampling(factor) for factor in subsampling_factors
+        ])
 
-# perform matrix multiplication of a and b
-# c = torch.matmul(a, b).reshape(1, 64, 224, 224)
+        self.smart_zero_padding = SmartZeroPadding()
+
+        # Initialize dilated convolution modules with their corresponding weights
+        self.conv_kernel_weights = nn.Parameter(torch.zeros(len(conv_kernel_configs)))
+        self.conv_kernel_modules = nn.ModuleList([
+            DilatedConvolution(max_out_channels, max_out_channels, kernel_size, stride, padding, dilation)
+            for kernel_size, stride, padding, dilation in conv_kernel_configs
+        ])
+
+        self.target_height = target_height
+        self.target_width = target_width
+
+    def forward(self, x):
+        # Apply channel mask
+        x = self.channel_mask(x)
+
+        # Apply resolution subsampling, smart zero-padding and dilated convolution
+        x_outs = []
+        for res_sub_module in self.resolution_subsampling_modules:
+            x_res_sub = res_sub_module(x)
+
+            x_padded = self.smart_zero_padding(x_res_sub, self.target_height, self.target_width)
+
+            # Apply dilated convolution (weighted sum)
+            conv_weights = nn.functional.softmax(self.conv_kernel_weights, dim=0)
+            x_out = sum(w * conv_module(x_padded) for w, conv_module in zip(conv_weights, self.conv_kernel_modules))
+            x_outs.append(x_out)
+
+        # Combine the outputs using resolution subsampling weights
+        res_sub_weights = nn.functional.softmax(self.resolution_subsampling_weights, dim=0)
+        x_combined = torch.stack(x_outs).permute(1, 0, 2, 3, 4)
+        x_out = torch.sum(x_combined * res_sub_weights.view(1, -1, 1, 1, 1), dim=1)
+
+        return x_out
+
+
+
+a = torch.randn(1, 3, 512, 512)
+
+in_channels = 3
+max_out_channels = 16
+num_masks = 3
+conv_kernel_configs = [
+    [3, 1, 0, 1],
+    [5, 1, 0, 1]
+]
+subsampling_factors = [2,4,8,16]
+target_height = 512
+target_width = 512
 
 # print(c.shape)  # output: torch.Size([1, 64, 224, 224])
-cm = ChannelMask(16, 16, 3)
+cm = FBNetV2BasicSearchBlock(in_channels, max_out_channels, num_masks, conv_kernel_configs, subsampling_factors, target_height, target_width)
 out = cm(a)
+print(out.shape)
 
 """
 In the above implementation of channel mask, shouldn't combined_mask has the same channel dimension of x? And it
