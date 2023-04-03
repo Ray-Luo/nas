@@ -136,3 +136,19 @@ for epoch in range(num_epochs):
 print('Finished Training')
 
 """
+
+"""
+conv1.resolution_subsampling_weights torch.Size([3]) 15.964902877807617
+conv1.conv_kernel_weights torch.Size([2]) 4.2104058265686035
+conv1.channel_mask.alpha torch.Size([3]) 47.6047248840332
+
+conv2.resolution_subsampling_weights torch.Size([3]) 13.574084281921387
+conv2.conv_kernel_weights torch.Size([2]) 4.015142440795898
+conv2.channel_mask.alpha torch.Size([3]) 75.86212158203125
+
+conv3.resolution_subsampling_weights torch.Size([3]) 14.490582466125488
+conv3.conv_kernel_weights torch.Size([2]) 4.486362934112549
+conv3.channel_mask.alpha torch.Size([3]) 151.17153930664062
+
+
+"""
