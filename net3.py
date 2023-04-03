@@ -4,6 +4,9 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
+import os
+
 
 
 class ChannelMask(nn.Module):
@@ -202,37 +205,77 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=64,
                                          shuffle=False, num_workers=2)
 
 
+from tqdm import tqdm
+
+def train(net, dataloader, criterion, optimizer, device):
+    net.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    for i, data in enumerate(tqdm(dataloader, desc="Training")):
+        inputs, labels = data
+        inputs, labels = inputs.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+
+        outputs = net(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+    return running_loss / (i + 1), 100 * correct / total
+
+def evaluate(net, dataloader, criterion, device):
+    net.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for i, data in enumerate(tqdm(dataloader, desc="Evaluating")):
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            outputs = net(inputs)
+            loss = criterion(outputs, labels)
+
+            running_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    return running_loss / (i + 1), 100 * correct / total
+
+
 net = Net().to(device)
+
+num_epochs = 1000
+best_acc = 0
+save_path = './best_checkpoint.pth'
+writer = SummaryWriter(log_dir='./logs')
 
 # define the loss function and optimizer
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(net.parameters(), lr=0.001)
 
-num_epochs = 1000
 for epoch in range(num_epochs):
-    running_loss = 0.0
-    for i, data in tqdm(enumerate(trainloader, 0), total=len(trainloader)):
-        inputs, labels = data[0].to(device), data[1].to(device)
-        optimizer.zero_grad()
-        outputs = net(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-    print('[%d] loss: %.3f' % (epoch + 1, running_loss / len(trainloader)))
+    print(f"Epoch {epoch+1}:")
+    train_loss, train_acc = train(net, trainloader, criterion, optimizer, device)
+    test_loss, test_acc = evaluate(net, testloader, criterion, device)
 
-print('Finished Training')
+    writer.add_scalars('Loss', {'train': train_loss, 'test': test_loss}, epoch)
+    writer.add_scalars('Accuracy', {'train': train_acc, 'test': test_acc}, epoch)
 
-# test the neural network on the test data
-correct = 0
-total = 0
-with torch.no_grad():
-    for data in testloader:
-        images, labels = data[0].to(device), data[1].to(device)
-        outputs = net(images)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+    print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}%")
 
-print('Accuracy of the network on the 10000 test images: %d %%' % (
-    100 * correct / total))
+    if test_acc > best_acc:
+        best_acc = test_acc
+        torch.save(net.state_dict(), save_path)
+        print(f"Checkpoint saved to {save_path}")
+
+writer.close()
+print(f"Training complete. Best accuracy: {best_acc:.2f}%")
