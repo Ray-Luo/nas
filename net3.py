@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+import torchvision
+import torchvision.transforms as transforms
+from tqdm import tqdm
 
 
 class ChannelMask(nn.Module):
@@ -140,24 +141,98 @@ class FBNetV2BasicSearchBlock(nn.Module):
 
 
 
-a = torch.randn(1, 3, 512, 512)
+a = torch.randn(1, 3, 256, 256)
 
 in_channels = 3
-max_out_channels = 16
+max_out_channels = 256
 num_masks = 3
 conv_kernel_configs = [
     [3, 1, 0, 1],
     [5, 1, 0, 1]
 ]
-subsampling_factors = [2,4,8,16]
-target_height = 512
-target_width = 512
+subsampling_factors = [2,4,8]
+target_height = 256
+target_width = 256
 
 # print(c.shape)  # output: torch.Size([1, 64, 224, 224])
 cm = FBNetV2BasicSearchBlock(in_channels, max_out_channels, num_masks, conv_kernel_configs, subsampling_factors, target_height, target_width)
 out = cm(a)
 print(out.shape)
 
-"""
-In the above implementation of channel mask, shouldn't combined_mask has the same channel dimension of x? And it
-"""
+# define the neural network architecture
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.conv1 = FBNetV2BasicSearchBlock(3, max_out_channels=100, num_masks=3, conv_kernel_configs=conv_kernel_configs, subsampling_factors=subsampling_factors, target_height=32, target_width=32)
+        self.conv2 = FBNetV2BasicSearchBlock(100, max_out_channels=150, num_masks=3, conv_kernel_configs=conv_kernel_configs, subsampling_factors=subsampling_factors, target_height=32, target_width=32)
+        self.conv3 = FBNetV2BasicSearchBlock(150, max_out_channels=300, num_masks=3, conv_kernel_configs=conv_kernel_configs, subsampling_factors=subsampling_factors, target_height=32, target_width=32)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.fc1 = nn.Linear(300 * 16 * 16, 512)
+        self.fc2 = nn.Linear(512, 10)
+
+    def forward(self, x):
+        x = self.pool(torch.relu(self.conv1(x))) # 100, 32, 32 --> 100, 16, 16
+        x = self.pool(torch.relu(self.conv2(x))) # 150, 16, 16 --> 150, 16, 16
+        x = self.pool(torch.relu(self.conv3(x))) # 150, 16, 16 --> 300, 16, 16
+        x = x.view(-1, 300 * 16 * 16)
+        x = torch.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+# define the transformations to apply to the input data
+transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomCrop(32, padding=4),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
+
+# load the CIFAR-10 dataset
+trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
+                                        download=True, transform=transform)
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=64,
+                                          shuffle=True, num_workers=2)
+
+testset = torchvision.datasets.CIFAR10(root='./data', train=False,
+                                       download=True, transform=transform)
+testloader = torch.utils.data.DataLoader(testset, batch_size=64,
+                                         shuffle=False, num_workers=2)
+
+
+net = Net().to(device)
+
+# define the loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(net.parameters(), lr=0.001)
+
+num_epochs = 1000
+for epoch in range(num_epochs):
+    running_loss = 0.0
+    for i, data in tqdm(enumerate(trainloader, 0), total=len(trainloader)):
+        inputs, labels = data[0].to(device), data[1].to(device)
+        optimizer.zero_grad()
+        outputs = net(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+    print('[%d] loss: %.3f' % (epoch + 1, running_loss / len(trainloader)))
+
+print('Finished Training')
+
+# test the neural network on the test data
+correct = 0
+total = 0
+with torch.no_grad():
+    for data in testloader:
+        images, labels = data[0].to(device), data[1].to(device)
+        outputs = net(images)
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+print('Accuracy of the network on the 10000 test images: %d %%' % (
+    100 * correct / total))
