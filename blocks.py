@@ -101,7 +101,7 @@ class SmartConv(nn.Module):
             # Crop the padded tensor to match the target height and width
             x = x_padded[:, :, :self.target_height, :self.target_width]
 
-        return x,
+        return x
 
     def forward(self, x):
         x = self.conv(x)
@@ -140,11 +140,7 @@ class FBNetV2BasicSearchBlock(nn.Module):
 
             # Apply dilated convolution (weighted sum)
             conv_weights = nn.functional.softmax(self.conv_kernel_weights, dim=0)
-            # for w, conv_module in zip(conv_weights, self.conv_kernel_modules):
-            #     tmp = conv_module(x_res_sub)
-            #     print(tmp)
-                # print(w, conv_module)
-            x_out = sum(w * (conv_module(x_res_sub))[0] for w, conv_module in zip(conv_weights, self.conv_kernel_modules))
+            x_out = sum(w * conv_module(x_res_sub) for w, conv_module in zip(conv_weights, self.conv_kernel_modules))
             x_outs.append(x_out)
 
         # Combine the outputs using resolution subsampling weights
