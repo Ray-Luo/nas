@@ -115,6 +115,51 @@ class InvertedResidual(nn.Module):
             return self.conv(x)
 
 
+class UpInvertedResidual(nn.Module):
+    def __init__(self, inp, oup, expansion, kernel_size=2, stride=2, use_se=False, use_hs=False):
+        super(UpInvertedResidual, self).__init__()
+        assert stride in [1, 2]
+
+        hidden_dim = expansion * inp
+
+        self.identity = stride == 1 and inp == oup
+
+        if inp == hidden_dim:
+            self.conv = nn.Sequential(
+                # dw
+                nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size, stride, (kernel_size - 1) // 2, groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                h_swish() if use_hs else nn.ReLU(inplace=True),
+                # Squeeze-and-Excite
+                SELayer(hidden_dim) if use_se else nn.Identity(),
+                # pw-linear
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(oup),
+            )
+        else:
+            self.conv = nn.Sequential(
+                # pw
+                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                h_swish() if use_hs else nn.ReLU(inplace=True),
+                # dw
+                nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size, stride, (kernel_size - 1) // 2, groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                # Squeeze-and-Excite
+                SELayer(hidden_dim) if use_se else nn.Identity(),
+                h_swish() if use_hs else nn.ReLU(inplace=True),
+                # pw-linear
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(oup),
+            )
+
+    def forward(self, x):
+        if self.identity:
+            return x + self.conv(x)
+        else:
+            return self.conv(x)
+
+
 class MobileNetV3(nn.Module):
     def __init__(self, cfgs, mode, num_classes=1000, width_mult=1.):
         super(MobileNetV3, self).__init__()
