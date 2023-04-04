@@ -63,9 +63,7 @@ class SmartConv(nn.Module):
         stride,
         expansion,
         use_se=False,
-        use_hs=False,
-        pre_dilation=1,
-        post_dilation=1):
+        use_hs=False,):
 
         super(SmartConv, self).__init__()
         self.target_height = target_height
@@ -77,8 +75,6 @@ class SmartConv(nn.Module):
         self.expansion = expansion
         self.use_se = use_se
         self.use_hs = use_hs
-        self.pre_dilation = pre_dilation
-        self.post_dilation = post_dilation
         self.conv = InvertedResidual(
             self.in_channels,
             self.out_channels,
@@ -92,13 +88,10 @@ class SmartConv(nn.Module):
     def smart_padding(self, x):
         input_height, input_width = x.shape[2], x.shape[3]
         if input_height < self.target_height or input_width < self.target_width:
-            self.use_dilation_next = True
             # Calculate factors for height and width, assuming square tensors
             factor_height = (self.target_height + input_height - 1) // input_height
             factor_width = (self.target_width + input_width - 1) // input_width
             assert factor_height == factor_width
-
-            self.post_dilation = factor_height
 
             # Create smart zero-padding
             x_padded = torch.zeros(x.shape[0], x.shape[1], factor_height * input_height, factor_width * input_width, device=x.device)
@@ -108,13 +101,13 @@ class SmartConv(nn.Module):
             # Crop the padded tensor to match the target height and width
             x = x_padded[:, :, :self.target_height, :self.target_width]
 
-        return x, self.post_dilation
+        return x,
 
     def forward(self, x):
         x = self.conv(x)
-        self.out, self.post_dilation = self.smart_padding(x)
+        self.out = self.smart_padding(x)
 
-        return self.out, self.post_dilation
+        return self.out
 
 
 class FBNetV2BasicSearchBlock(nn.Module):
@@ -135,7 +128,6 @@ class FBNetV2BasicSearchBlock(nn.Module):
             SmartConv(max_out_channels, max_out_channels, target_height, target_width, kernel_size, stride, expansion, use_se==1, use_hs==1)
             for kernel_size, stride, expansion, use_se, use_hs in conv_kernel_configs
         ])
-        self.id_conv = nn.Conv2d(in_channels=self.in_channels, out_channels=self.max_out_channels, kernel_size=1, bias=False)
 
     def forward(self, x):
         # Apply channel mask
@@ -188,16 +180,9 @@ class Net(nn.Module):
         self.fc2 = nn.Linear(512, 10)
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.pool(torch.relu(x)) # 100, 32, 32 --> 100, 16, 16
-
-        # self.conv2.pre_dilation = post_dilation
-        x = self.conv2(x)
-        x = self.pool(torch.relu(x)) # 150, 16, 16 --> 150, 16, 16
-
-        # self.conv3.pre_dilation = post_dilation
-        x = self.conv3(x)
-        x = self.pool(torch.relu(x)) # 150, 16, 16 --> 300, 16, 16
+        x = self.pool(torch.relu(self.conv1(x))) # 100, 32, 32 --> 100, 16, 16
+        x = self.pool(torch.relu(self.conv2(x))) # 150, 16, 16 --> 150, 16, 16
+        x = self.pool(torch.relu(self.conv3(x))) # 150, 16, 16 --> 300, 16, 16
         x = x.view(-1, 300 * 16 * 16)
         x = torch.relu(self.fc1(x))
         x = self.fc2(x)
@@ -205,10 +190,10 @@ class Net(nn.Module):
 
 
 # net = FBNetV2BasicSearchBlock(in_channels, max_out_channels, num_masks, conv_kernel_configs, subsampling_factors, target_height, target_width)
-net = Net()
-input = torch.rand(1, 3, 32, 32)
-out = net(input)
-print(out.shape)
+# net = Net()
+# input = torch.rand(1, 3, 32, 32)
+# out = net(input)
+# print(out.shape)
 
 
 # target_height = 6

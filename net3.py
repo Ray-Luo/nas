@@ -14,10 +14,14 @@ a = torch.randn(1, 3, 256, 256)
 in_channels = 3
 max_out_channels = 256
 num_masks = 3
-conv_kernel_configs = [3,5]
+# kernel_size, stride, expansion, use_se, use_hs
+conv_kernel_configs = [
+    [3, 1, 1, 1, 0],
+    [5, 1, 1, 0, 1],
+]
 subsampling_factors = [1,2,4,8]
-target_height = 256
-target_width = 256
+target_height = 32
+target_width = 32
 
 class Net(nn.Module):
     def __init__(self):
