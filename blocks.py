@@ -62,8 +62,8 @@ class SmartConv(nn.Module):
         kernel_size,
         stride,
         expansion,
-        use_se=False,
-        use_hs=False,):
+        use_se=0,
+        use_hs=0,):
 
         super(SmartConv, self).__init__()
         self.target_height = target_height
@@ -73,8 +73,8 @@ class SmartConv(nn.Module):
         self.kernel_size = kernel_size
         self.stride = stride
         self.expansion = expansion
-        self.use_se = use_se
-        self.use_hs = use_hs
+        self.use_se = use_se == 1
+        self.use_hs = use_hs == 1
         self.conv = InvertedResidual(
             self.in_channels,
             self.out_channels,
@@ -110,6 +110,38 @@ class SmartConv(nn.Module):
         return self.out
 
 
+class Skip(nn.Module):
+    def __init__(self, in_channels, out_channels, target_height, target_width):
+        super(Skip, self).__init__()
+        self.target_height = target_height
+        self.target_width = target_width
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+    def smart_padding(self, x):
+        input_height, input_width = x.shape[2], x.shape[3]
+        if input_height < self.target_height or input_width < self.target_width:
+            # Calculate factors for height and width, assuming square tensors
+            factor_height = (self.target_height + input_height - 1) // input_height
+            factor_width = (self.target_width + input_width - 1) // input_width
+            assert factor_height == factor_width
+
+            # Create smart zero-padding
+            x_padded = torch.zeros(x.shape[0], x.shape[1], factor_height * input_height, factor_width * input_width, device=x.device)
+
+            x_padded[:, :, ::factor_height, ::factor_width] = x
+
+            # Crop the padded tensor to match the target height and width
+            x = x_padded[:, :, :self.target_height, :self.target_width]
+
+        return x
+
+    def forward(self, x):
+        return self.smart_padding(x)
+
+
+
+
 class FBNetV2BasicSearchBlock(nn.Module):
     def __init__(self, in_channels, max_out_channels, num_masks, conv_kernel_configs, subsampling_factors, target_height, target_width):
         super(FBNetV2BasicSearchBlock, self).__init__()
@@ -126,7 +158,7 @@ class FBNetV2BasicSearchBlock(nn.Module):
         self.conv_kernel_weights = nn.Parameter(torch.zeros(len(conv_kernel_configs)))
         self.conv_kernel_modules = nn.ModuleList([
             SmartConv(max_out_channels, max_out_channels, target_height, target_width, kernel_size, stride, expansion, use_se==1, use_hs==1)
-            for kernel_size, stride, expansion, use_se, use_hs in conv_kernel_configs
+            if kernel_size != 0 else Skip(max_out_channels, max_out_channels, target_height, target_width) for kernel_size, stride, expansion, use_se, use_hs in conv_kernel_configs
         ])
 
     def forward(self, x):
