@@ -52,7 +52,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    writer = SummaryWriter(log_dir='./logs_caltech')
+    writer = SummaryWriter(log_dir='./logs_unet')
 
     logging.info(f'''Starting training:
         Epochs:          {epochs}
@@ -142,7 +142,7 @@ def get_args():
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
     parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-4,
                         help='Learning rate', dest='lr')
-    parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
+    parser.add_argument('--load', '-f', type=str, default="/home/luoleyouluole/nas/unet_checkpoints/checkpoint_epoch1.pth", help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
     parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0,
                         help='Percent of the data that is used as validation (0-100)')
