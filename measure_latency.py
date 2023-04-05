@@ -3,10 +3,11 @@ import torch.nn as nn
 import time
 from blocks import ChannelMask, FBNetV2BasicSearchBlock
 
-def measure_latency(operation, num_runs=10):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def measure_latency(operation, input_tensor, num_runs=50):
+    device = torch.device('cpu')
     operation = operation.to(device)
-    input_tensor = torch.randn(operation.input_shape).to(device)
+    input_tensor = input_tensor.to(device)
+    print(input_tensor.device.type)
 
     torch.cuda.synchronize()  # Synchronize for accurate timing
     start_time = time.time()
@@ -46,30 +47,52 @@ if 0:
 Measure Channel Masking
 """
 if 1:
-    configs = [
+    operation_configs = [
         {'type': 'channel_mask', 'in_channels': 3, 'max_out_channels': 10, 'num_masks': 3}, # warm up
     ]
-    for in_channels in range(1,300):
-        for max_out_channels in range(1,300):
-            for num_masks in range(1,20):
-                configs.append({'type': 'channel_mask', 'in_channels': in_channels, 'max_out_channels': max_out_channels, 'num_masks': num_masks})
+    for in_channels in range(1,4):
+        for max_channels_i in range(1,4):
+            max_out_channels = max_channels_i + in_channels
+            for num_masks in range(1,3):
+                operation_configs.append({'type': 'channel_mask', 'in_channels': in_channels, 'max_out_channels': max_out_channels, 'num_masks': num_masks})
 
     input_configs = [
         {'type': 'tensor', 'batch_size': 1, 'depth': 1, 'height': 3, 'width': 3},
     ]
-    for depth in range(1,300):
-        for height in range(1,1024):
-            for width in range(1,1024):
-                input_configs.append({'type': 'tensor', 'batch_size': 1, 'depth': depth, 'height': height, 'width': width})
+    for height in range(3,6,2):
+        input_configs.append({'type': 'tensor', 'batch_size': 1, 'height': height, 'width': height})
 
     latency_lut = {}
-    for
-    for operation_config in operations:
-        if operation_config['type'] == 'channel_mask':
-            op = ChannelMask(operation_config['in_channels'], operation_config['max_out_channels'], operation_config['num_masks'])
-            conv.input_shape = (1, operation_config['in_channels'], 32, 32)
-            latency = measure_latency(conv)
-            key = (operation_config['type'], operation_config['kernel_size'], operation_config['stride'], operation_config['in_channels'], operation_config['out_channels'])
-            latency_lut[key] = latency
+    for input_config in input_configs:
+        for operation_config in operation_configs:
+            input_tensor = torch.rand(input_config["batch_size"], operation_config['in_channels'], input_config["height"], input_config["width"])
+            if operation_config['type'] == 'channel_mask':
+                op = ChannelMask(operation_config['in_channels'], operation_config['max_out_channels'], operation_config['num_masks'])
+                latency = measure_latency(op, input_tensor)
+                key = (
+                    input_config["type"],
+                    input_config["batch_size"],
+                    operation_config['in_channels'],
+                    input_config["height"],
+                    input_config["width"],
+                    operation_config['type'],
+                    operation_config['max_out_channels'],
+                    operation_config['num_masks']
+                )
+                latency_lut[key] = latency
 
-    print(latency_lut)
+"""
+    report_dict = {}
+    in_channels = []
+    f_height = []
+    f_width = []
+    max_channels = []
+    num_masks = []
+    for i, (key, value) in enumerate(latency_lut.items()):
+        in_channels.append(key[1])
+        f_height.append(key[1])
+        if i < 10:
+            print(key, value)
+        else:
+            break
+"""
