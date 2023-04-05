@@ -33,7 +33,7 @@ def predict_img(net,
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images')
-    parser.add_argument('--model', '-m', default='/home/luoleyouluole/nas/unet_checkpoints/checkpoint_epoch5.pth', metavar='FILE',
+    parser.add_argument('--model', '-m', default='/home/luoleyouluole/nas/unet_checkpoints/checkpoint_epoch11.pth', metavar='FILE',
                         help='Specify the file in which the model is stored')
     parser.add_argument('--input', '-i', metavar='INPUT', nargs='+', help='Filenames of input images', required=True)
     parser.add_argument('--output', '-o', metavar='OUTPUT', nargs='+', help='Filenames of output images')
