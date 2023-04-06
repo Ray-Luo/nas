@@ -1,0 +1,14 @@
+*.pyc
+data/
+__pycache__/
+checkpoints/
+*.pth
+*.jpg
+venv/
+.idea/
+wandb/
+logs_caltech/
+logs_cifar10/
+logs_cifar10_legacy/
+logs_unet/
+unet_checkpoints/
