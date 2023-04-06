@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from blocks import ChannelMask, FBNetV2BasicSearchBlock
+from blocks import ChannelMask, ResolutionSubsampling, FBNetV2BasicSearchBlock
 import torch.utils.benchmark as benchmark
 import pandas as pd
 from tqdm import tqdm
@@ -44,7 +44,7 @@ Measure Channel Masking
 MAX_CHANNEL = 150 + 1
 MAX_NUM_MASK = 5 + 1
 
-if 1:
+if 0:
     operation_configs = []
     for in_channels in FEATURE_DEPTH_LIST:
         for max_channels in range(in_channels, MAX_CHANNEL, DEPTH_INTERVAL):
@@ -81,6 +81,55 @@ if 1:
     latency_lut["f_height"] = f_height
     latency_lut["max_channels"] = max_channels
     latency_lut["num_masks"] = num_masks
+    latency_lut["latency_mean"] = latency_mean
+
+    df = pd.DataFrame(latency_lut)
+
+    # Save the DataFrame to a CSV file
+    df.to_csv('/home/luoleyouluole/nas/latency_lut.csv', index=False)
+
+
+"""
+Measure Channel Masking
+"""
+SUBSAMPLE_LIST = [1,2]
+
+DEPTH_MAX = 150 + 1
+DEPTH_MIN = 1
+DEPTH_INTERVAL = 5
+
+CHANNEL_LIST = range(DEPTH_MIN, DEPTH_MAX, DEPTH_INTERVAL)
+
+if 1:
+    operation_configs = []
+    for subsample in SUBSAMPLE_LIST:
+        operation_configs.append({'type': 'ResolutionSubsampling', 'subsampling_factor': subsample})
+
+    input_configs = []
+    for width in FEATURE_DIM_LIST:
+        for in_channel in CHANNEL_LIST:
+            input_configs.append({'type': 'tensor', 'batch_size': 1, "in_channels": in_channel, 'height': width, 'width': width})
+
+    latency_lut = {}
+    in_channels = []
+    f_height = []
+    subsampling_factor = []
+    latency_mean = []
+
+    for input_config in tqdm(input_configs):
+        for operation_config in tqdm(operation_configs):
+            input_tensor = torch.rand(input_config["batch_size"], input_config['in_channels'], input_config["height"], input_config["width"])
+            if operation_config['type'] == 'ResolutionSubsampling':
+                op = ResolutionSubsampling(operation_config['subsampling_factor'])
+                mean = measure_latency(op, input_tensor)
+                in_channels.append(input_config['in_channels'])
+                f_height.append(input_config["height"])
+                subsampling_factor.append(operation_config['subsampling_factor'])
+                latency_mean.append(mean)
+
+    latency_lut["in_channels"] = in_channels
+    latency_lut["f_height"] = f_height
+    latency_lut["subsampling_factor"] = subsampling_factor
     latency_lut["latency_mean"] = latency_mean
 
     df = pd.DataFrame(latency_lut)
