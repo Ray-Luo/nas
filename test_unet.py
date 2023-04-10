@@ -287,3 +287,11 @@ a = torch.rand(1,3,512,512)
 net = UNetMobileNetv3(out_size=512)
 out = net(a)
 print(out.shape)
+
+
+from nn_meter import load_latency_predictor
+
+predictor = load_latency_predictor("cortexA76cpu_tflite21", 1.0) # case insensitive in backend
+lat = predictor.predict(net, "torch")
+
+print(lat)
