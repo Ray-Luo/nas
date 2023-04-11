@@ -288,10 +288,12 @@ net = UNetMobileNetv3(out_size=512)
 out = net(a)
 print(out.shape)
 
-
+import nni.retiarii.nn.pytorch as nn
 from nn_meter import load_latency_predictor
 
+input_shape = (1, 3, 512, 512)
+
 predictor = load_latency_predictor("cortexA76cpu_tflite21", 1.0) # case insensitive in backend
-lat = predictor.predict(net, "torch")
+lat = predictor.predict(net, "torch", input_shape=input_shape, apply_nni=False)
 
 print(lat)
