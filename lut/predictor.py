@@ -4,6 +4,148 @@ import pickle
 import logging
 from glob import glob
 import torch
+import onnx
+from itertools import chain
+from .constants import SLICE_TYPE
+from .extract_features import get_predict_features, predict_model
+import tempfile
+from onnxsim import simplify
+
+
+def get_tensor_shape(tensor):
+    shape = []
+    for dim in tensor.type.tensor_type.shape.dim:
+        shape.append(dim.dim_value)
+    if len(shape) == 4:
+        shape = [shape[0], shape[2], shape[3], shape[1]]
+    return shape
+
+
+class OnnxConverter:
+    def __init__(self, model):
+        from onnx import shape_inference
+        inferred_model = shape_inference.infer_shapes(model)
+        self.graph = inferred_model.graph
+
+        self.tensors = {}
+        for tensor in chain(self.graph.input, self.graph.value_info, self.graph.output):
+            self.tensors[tensor.name] = {
+                "shape": get_tensor_shape(tensor),
+                "inputs": [],
+                "outputs": [],
+            }
+
+        for node in self.graph.node:
+            for input_name in node.input:
+                if input_name in self.tensors:
+                    self.tensors[input_name]["outputs"].append(node)
+            for output_name in node.output:
+                if output_name in self.tensors:
+                    self.tensors[output_name]["inputs"].append(node)
+
+    def fetch_attrs(self, node):
+        from onnx import AttributeProto
+        attrs = {}
+        input_tensors = []
+        for input_name in node.input:
+            if input_name in self.tensors:
+                input_tensors.append(self.tensors[input_name]["shape"])
+        output_tensors = []
+        for output_name in node.output:
+            if output_name in self.tensors:
+                output_tensors.append(self.tensors[output_name]["shape"])
+        if node.op_type == SLICE_TYPE:
+            for tensor_name in self._get_sibling_slice_output_tensors(node):
+                output_tensors.append(self.tensors[tensor_name]["shape"])
+        if (
+            len(input_tensors) == 0
+            or len(input_tensors[0]) <= 1
+            or len(output_tensors) == 0
+            or len(output_tensors[0]) <= 1
+        ):
+            logging.warning(f"Empty shape information with {node.name}")
+            return attrs
+
+        attrs["attr"] = {}
+        attrs["type"] = node.op_type
+        attrs["input_shape"] = input_tensors
+        attrs["output_shape"] = output_tensors
+        for attr in node.attribute:
+            if attr.type == AttributeProto.FLOAT:
+                attrs["attr"][attr.name] = attr.f
+            elif attr.type == AttributeProto.INT:
+                attrs["attr"][attr.name] = attr.i
+            elif attr.type == AttributeProto.INTS:
+                attrs["attr"][attr.name] = list(attr.ints)
+            elif attr.type == AttributeProto.STRING:
+                attrs["attr"][attr.name] = str(attr.s)
+            else:
+                logging.warning(f"Unsupported attributes type: {attr.type}")
+
+        return attrs
+
+    def convert(self):
+        result = {}
+
+        sliced_tensors = set()
+        selected_slice = set()
+        for node in self.graph.node:
+            if node.op_type == SLICE_TYPE:
+                tensor = node.input[0]
+                if tensor in sliced_tensors:
+                    continue
+                else:
+                    sliced_tensors.add(tensor)
+                    selected_slice.add(node.name)
+
+        for node in self.graph.node:
+            outbounds = []
+            inbounds = []
+            if node.op_type == SLICE_TYPE and node.name not in selected_slice:
+                continue
+
+            for input_name in node.input:
+                if input_name in self.tensors:  # remove dummy ops
+                    for pred_pred in self.tensors[input_name]['inputs']:
+                        inbounds.append(pred_pred.name)
+            for output_name in node.output:
+                if output_name in self.tensors:
+                    for succ_succ in self.tensors[output_name]['outputs']:
+                        outbounds.append(succ_succ.name)
+                if node.op_type == SLICE_TYPE:
+                    for tensor_name in self._get_sibling_slice_output_tensors(node):
+                        outbounds.append(tensor_name)
+                result[node.name] = {
+                    "attr": self.fetch_attrs(node),
+                    "outbounds": outbounds,
+                    "inbounds": inbounds,
+                }
+
+        return result
+
+    def _get_sibling_slice_output_tensors(self, node):
+        output_tensors = []
+        for slice in self.tensors[node.input[0]]["outputs"]:
+            if slice.name != node.name and slice.op_type == SLICE_TYPE:
+                for output_name in slice.output:
+                    if output_name in self.tensors:
+                        output_tensors.append(output_name)
+
+        return output_tensors
+
+
+class OnnxBasedTorchConverter(OnnxConverter):
+    def __init__(self, model, example_inputs):
+        with tempfile.TemporaryFile() as fp:
+            torch.onnx.export(model, example_inputs, fp)
+            fp.seek(0)
+            model = onnx.load(fp, load_external_data=False)
+
+        # convert model
+        model_simp, check = simplify(model)
+
+        assert check, "Simplified ONNX model could not be validated"
+        super().__init__(model_simp)
 
 def check_predictors(ppath, kernel_predictors):
     """
@@ -118,11 +260,7 @@ def torch_model_to_graph(model, input_shape=(1, 3, 224, 224), apply_nni=False):
     if apply_nni:
         # apply NNI-based torch converter, which requires nni>=2.4 installation and should use nn interface from NNI
         # `import nni.retiarii.nn.pytorch as nn` to define the PyTorch modules.
-        try:
-            logging.info("NNI-based Torch Converter is applied for model conversion")
-            converter = NNIBasedTorchConverter(model, args)
-        except:
-            raise NotImplementedError("Your model is not fully converted by NNI-based converter. Please set apply_nni=False and try again.")
+        pass
     else:
         # apply Onnx-based torch converter, which requires onnx installation (well tested version is onnx==1.9.0)
         # and the conversion is more stable
@@ -132,7 +270,6 @@ def torch_model_to_graph(model, input_shape=(1, 3, 224, 224), apply_nni=False):
 
 
 def model_file_to_graph(filename: str, model_type: str, input_shape=(1, 3, 224, 224), apply_nni=False):
-    models = try_import_torchvision_models()
     torchvision_zoo_dict = {
         'resnet18': 'models.resnet18()',
         'alexnet': 'models.alexnet()',
@@ -155,7 +292,10 @@ def model_file_to_graph(filename: str, model_type: str, input_shape=(1, 3, 224, 
     return torch_model_to_graph(model, input_shape, apply_nni)
 
 
-
+def nn_predict(predictors, kernel_units):
+    features = get_predict_features(kernel_units)
+    py = predict_model(features, predictors)
+    return py
 
 class nnMeterPredictor:
     def __init__(self, predictors, fusionrule):
@@ -166,31 +306,12 @@ class nnMeterPredictor:
     def predict(
         self, model, model_type, input_shape=(1, 3, 224, 224), apply_nni=False
     ):
-        """
-        return the predicted latency in microseconds (ms)
-        @params:
-        model: the model to be predicted, allowed file include
-            - the path to a saved tensorflow model file (*.pb), `model_type` must be set to "pb"
-            - pytorch model object (nn.Module), `model_type` must be set to "torch"
-            - ONNX model object or the path to a saved ONNX model file (*.onnx), `model_type` must be set to "onnx"
-            - dictionary object following nn-Meter-IR format, `model_type` must be set to "nnmeter-ir"
-            - dictionary object following NNI-IR format, `model_type` must be set to "nni-ir"
-
-        model_type: string to specify the type of parameter model, allowed items are ["pb", "torch", "onnx", "nnmeter-ir", "nni-ir"]
-
-        input_shape: the shape of input tensor for inference (if necessary), a random tensor according to the shape will be generated and used. This parameter is only
-        accessed when model_type == 'torch'
-        apply_nni: switch the torch converter used for torch model parsing. If apply_nni==True, NNI-based converter is used for torch model conversion, which requires
-            nni>=2.4 installation and should use nn interface from NNI `import nni.retiarii.nn.pytorch as nn` to define the PyTorch modules. Otherwise Onnx-based torch
-            converter is used, which requires onnx installation (well tested version is onnx>=1.9.0). NNI-based converter is much faster while the conversion is unstable
-            as it could fail in some case. Onnx-based converter is much slower but stable compared to NNI-based converter. This parameter is only accessed when
-            model_type == 'torch'
-        """
         logging.info("Start latency prediction ...")
         if isinstance(model, str):
             graph = model_file_to_graph(model, model_type, input_shape, apply_nni=apply_nni)
         else:
-            graph = model_to_graph(model, model_type, input_shape=input_shape, apply_nni=apply_nni)
+            # graph = model_to_graph(model, model_type, input_shape=input_shape, apply_nni=apply_nni)
+            pass
 
         # logging.info(graph)
         self.kd.load_graph(graph)
