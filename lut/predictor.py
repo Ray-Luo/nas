@@ -1,5 +1,4 @@
 import os
-import yaml
 import pickle
 import logging
 from glob import glob
@@ -10,7 +9,12 @@ from .constants import SLICE_TYPE
 from .extract_features import get_predict_features, predict_model
 import tempfile
 from onnxsim import simplify
+import yaml
+from packaging import version
+from .kernel_detector import KernelDetector
 
+__user_config_folder__ = os.path.expanduser('~/.nn_meter/config')
+__predictors_cfg_filename__ = 'predictors.yaml'
 
 def get_tensor_shape(tensor):
     shape = []
@@ -205,9 +209,9 @@ def loading_customized_predictor(pred_info={"name": "cortexA76cpu_tflite21","ver
     hardware = pred_info['name']
     ppath = pred_info['package_location']
 
-    isexist = check_predictors(ppath, pred_info["kernel_predictors"])
-    if not isexist:
-        raise FileExistsError(f"The predictor {hardware} in {ppath} does not exist.")
+    # isexist = check_predictors(ppath, pred_info["kernel_predictors"])
+    # if not isexist:
+    #     raise FileExistsError(f"The predictor {hardware} in {ppath} does not exist.")
 
     # load predictors
     predictors = {}
@@ -227,19 +231,45 @@ def loading_customized_predictor(pred_info={"name": "cortexA76cpu_tflite21","ver
     return predictors, fusionrule
 
 
-def load_latency_predictor(predictor_name: str, predictor_version: float = None):
+def load_config_file(fname: str, loader=None):
+    """load config file from __user_config_folder__;
+    if the file not located in __user_config_folder__, copy it from distribution
     """
-    return the predictor model according to the given predictor name and version
-    @params:
-    predictor_name: string to specify the name of the target latency predictor. All built-in predictors can be viewed by nn_meter.list_latency_predictors()
-        or through the config file in ~/.nn_meter/config/predictors.yaml.
+    filepath = os.path.join(__user_config_folder__, fname)
+    try:
+        with open(filepath) as fp:
+            if loader is None:
+                return yaml.load(fp, yaml.FullLoader)
+            else:
+                return loader(fp)
+    except FileNotFoundError:
+        pass
 
-    predictor_version: string to specify the version of the target latency predictor. If not specified (default as None), the lateast version of the
-        predictor will be loaded.
-    """
-    user_data_folder = "/home/luoleuyouluole/.nn_meter/data/"
-    # pred_info = load_predictor_config(predictor_name, predictor_version)
-    pred_info = {"name": "cortexA76cpu_tflite21","version":1.0, "download":False}
+
+def load_predictor_config(predictor_name: str, predictor_version: float = None):
+    config = load_config_file(__predictors_cfg_filename__)
+    preds_info = [p for p in config if p['name'] == predictor_name and (predictor_version is None or p['version'] == predictor_version)]
+    n_preds = len(preds_info)
+    if n_preds == 1:
+        return preds_info[0]
+    elif n_preds > 1:
+        # find the latest version of the predictor
+        latest_version, latest_version_idx = version.parse(str(preds_info[0]['version'])), 0
+        for i in range(1, n_preds):
+            if version.parse(str(preds_info[i]['version'])) > latest_version:
+                latest_version = version.parse(str(preds_info[i]['version']))
+                latest_version_idx = i
+        print(f'WARNING: There are multiple version for {predictor_name}, use the latest one ({str(latest_version)})')
+        return preds_info[latest_version_idx]
+    else:
+        raise NotImplementedError('No predictor that meets the required name and version, please try again.')
+
+
+def load_latency_predictor(predictor_name: str, predictor_version: float = None):
+    user_data_folder = "/home/luoleyouluole/.nn_meter/data/"
+    pred_info = load_predictor_config(predictor_name, predictor_version)
+    pred_info["package_location"] = user_data_folder+"predictor/cortexA76cpu_tflite21"
+    # pred_info = {"name": "cortexA76cpu_tflite21","version":1.0,"package_location":user_data_folder,"kernel_predictors":user_data_folder+"cortexA76cpu_tflite21"}
 
     if "download" in pred_info:
         kernel_predictors, fusionrule = loading_to_local(pred_info, os.path.join(user_data_folder, 'predictor'))
@@ -301,7 +331,7 @@ class nnMeterPredictor:
     def __init__(self, predictors, fusionrule):
         self.kernel_predictors = predictors
         self.fusionrule = fusionrule
-        # self.kd = KernelDetector(self.fusionrule)
+        self.kd = KernelDetector(self.fusionrule)
 
     def predict(
         self, model, model_type, input_shape=(1, 3, 224, 224), apply_nni=False

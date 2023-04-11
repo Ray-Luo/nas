@@ -288,8 +288,9 @@ net = UNetMobileNetv3(out_size=512)
 out = net(a)
 print(out.shape)
 
-import nni.retiarii.nn.pytorch as nn
-from nn_meter import load_latency_predictor
+# import nni.retiarii.nn.pytorch as nn
+# from nn_meter import load_latency_predictor
+from lut.predictor import load_latency_predictor
 
 input_shape = (1, 3, 512, 512)
 
