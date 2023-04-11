@@ -1,20 +1,19 @@
 import json
-from .ir_tools import convert_nodes
 from .graph_tool import ModelGraph
-import os
+from .fusion_lib import get_fusion_unit
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# BASE_DIR = os.path.dirname(os.path.join(os.path.abspath(__file__),"fusion_lib"))
 
 
-def get_fusion_unit(name):
-    filename = os.path.join(BASE_DIR, f"{name}_fusionunit.json")
-    with open(filename, "r") as fp:
-        graph = json.load(fp)
+# def get_fusion_unit(name):
+#     filename = os.path.join(BASE_DIR, f"{name}_fusionunit.json")
+#     with open(filename, "r") as fp:
+#         graph = json.load(fp)
 
-    if not isinstance(graph, list):
-        graph = [graph]
+#     if not isinstance(graph, list):
+#         graph = [graph]
 
-    return [ModelGraph(graph=convert_nodes(g)) for g in graph]
+#     return [ModelGraph(graph=convert_nodes(g)) for g in graph]
 
 class RuleReader:
     rules_default = {

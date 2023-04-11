@@ -340,8 +340,7 @@ class nnMeterPredictor:
         if isinstance(model, str):
             graph = model_file_to_graph(model, model_type, input_shape, apply_nni=apply_nni)
         else:
-            # graph = model_to_graph(model, model_type, input_shape=input_shape, apply_nni=apply_nni)
-            pass
+            graph = torch_model_to_graph(model, input_shape, apply_nni)
 
         # logging.info(graph)
         self.kd.load_graph(graph)
