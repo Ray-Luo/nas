@@ -132,9 +132,7 @@ class InvertedResidualBlock(nn.Module):
 
 
 class UpInvertedResidualBlock(nn.Module):
-    def __init__(
-        self, inp, oup, stride=2, expansion=6, use_se=False, use_hs=False
-    ):
+    def __init__(self, inp, oup, stride=2, expansion=6, use_se=False, use_hs=False):
         super(UpInvertedResidualBlock, self).__init__()
         assert stride in [1, 2]
 
@@ -203,26 +201,28 @@ class UNetMobileNetv3(nn.Module):
         super(UNetMobileNetv3, self).__init__()
         self.out_size = out_size
 
+        expansion = 6
+
         # encoding arm
-        self.conv3x3 = self.depthwise_conv(3, 32, p=1, s=2)
-        self.irb_bottleneck1 = self.irb_bottleneck(32, 16, 1, 1, 1)
-        self.irb_bottleneck2 = self.irb_bottleneck(16, 24, 2, 2, 6)
-        self.irb_bottleneck3 = self.irb_bottleneck(24, 32, 3, 2, 6)
-        self.irb_bottleneck4 = self.irb_bottleneck(32, 64, 4, 2, 6)
-        self.irb_bottleneck5 = self.irb_bottleneck(64, 96, 4, 2, 6)
-        self.irb_bottleneck6 = self.irb_bottleneck(96, 160, 3, 1, 6)
-        self.irb_bottleneck7 = self.irb_bottleneck(160, 240, 3, 2, 6)
-        self.irb_bottleneck8 = self.irb_bottleneck(240, 320, 1, 1, 6)
-        self.conv1x1_encode = nn.Conv2d(320, 1280, kernel_size=1, stride=1)
+        self.conv3x3 = self.depthwise_conv(3, 16, p=1, s=2)
+        self.irb_bottleneck1 = self.irb_bottleneck(16, 24, 1, 1, 1)
+        self.irb_bottleneck2 = self.irb_bottleneck(24, 32, 2, 2, expansion)
+        self.irb_bottleneck3 = self.irb_bottleneck(32, 48, 3, 2, expansion)
+        self.irb_bottleneck4 = self.irb_bottleneck(48, 96, 4, 2, expansion)
+        self.irb_bottleneck5 = self.irb_bottleneck(96, 128, 4, 2, expansion)
+        self.irb_bottleneck6 = self.irb_bottleneck(128, 256, 3, 1, expansion)
+        self.irb_bottleneck7 = self.irb_bottleneck(256, 320, 1, 2, expansion)
         # decoding arm
-        self.D_irb1 = self.irb_bottleneck(1280, 160, 1, 2, 6, True)
-        self.D_irb2 = self.irb_bottleneck(160, 64, 1, 2, 6, True)
-        self.D_irb3 = self.irb_bottleneck(64, 32, 1, 2, 6, True)
-        self.D_irb4 = self.irb_bottleneck(32, 24, 1, 2, 6, True)
-        self.D_irb5 = self.irb_bottleneck(24, 16, 1, 2, 6, True)
-        self.DConv4x4 = nn.ConvTranspose2d(16, 16, 4, 2, 1, groups=16, bias=False)
+        self.D_irb1 = self.irb_bottleneck(320, 128, 1, 2, expansion, True)
+        self.D_irb2 = self.irb_bottleneck(128, 96, 1, 2, expansion, True)
+        self.D_irb3 = self.irb_bottleneck(96, 48, 1, 2, expansion, True)
+        self.D_irb4 = self.irb_bottleneck(48, 32, 1, 2, expansion, True)
+        self.D_irb5 = self.irb_bottleneck(32, 24, 1, 2, expansion, True)
+        self.D_irb6 = self.irb_bottleneck(24, 16, 1, 2, expansion, True)
+        self.D_irb7 = self.irb_bottleneck(16, 3, 1, 1, expansion, False)
+        # self.DConv4x4 = nn.ConvTranspose2d(32, 16, 4, 2, 1, groups=16, bias=False)
         # Final layer: output channel number can be changed as per the usecase
-        self.conv1x1_decode = nn.Conv2d(16, 3, kernel_size=1, stride=1)
+        # self.conv1x1_decode = nn.Conv2d(16, 3, kernel_size=1, stride=1)
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
         """
@@ -269,32 +269,35 @@ class UNetMobileNetv3(nn.Module):
         x6 = self.irb_bottleneck5(x5)  # (96,16,16) s4
         x7 = self.irb_bottleneck6(x6)  # (160,16,16)
         x8 = self.irb_bottleneck7(x7)  # (240,8,8)
-        x9 = self.irb_bottleneck8(x8)  # (320,8,8)
-        x10 = self.conv1x1_encode(x9)  # (1280,8,8) s5
 
         # Right arm / Decoding arm with skip connections
-        d1 = self.D_irb1(x10) + x7
+        d1 = self.D_irb1(x8) + x6
         d2 = self.D_irb2(d1) + x5
         d3 = self.D_irb3(d2) + x4
         d4 = self.D_irb4(d3) + x3
         d5 = self.D_irb5(d4) + x2
-        d6 = self.DConv4x4(d5)
-        out = self.conv1x1_decode(d6)
-        return out
+        d6 = self.D_irb6(d5)
+        d7 = self.D_irb7(d6)
+        return d7
+
 
 import torch
 a = torch.rand(1,3,512,512)
-net = UNetMobileNetv3(out_size=512)
-out = net(a)
+model = UNetMobileNetv3(out_size=512)
+out = model(a)
 print(out.shape)
+
+num_params = sum(p.numel() for p in model.parameters())
+
+print('Number of parameters: {:,}'.format(num_params))
 
 # import nni.retiarii.nn.pytorch as nn
 # from nn_meter import load_latency_predictor
-from lut.predictor import load_latency_predictor
+# from lut.predictor import load_latency_predictor
 
-input_shape = (1, 3, 512, 512)
+# input_shape = (1, 3, 512, 512)
 
-predictor = load_latency_predictor("cortexA76cpu_tflite21", 1.0) # case insensitive in backend
-lat = predictor.predict(net, "torch", input_shape=input_shape, apply_nni=False)
+# predictor = load_latency_predictor("cortexA76cpu_tflite21", 1.0) # case insensitive in backend
+# lat = predictor.predict(net, "torch", input_shape=input_shape, apply_nni=False)
 
-print(lat)
+# print(lat)
