@@ -2,21 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-BASE_LATENCY = 10
-
-class RepeatMask(nn.Module):
-    def __init__(self, num_classes):
-        super(RepeatMask, self).__init__()
-        self.num_classes = num_classes
-        self.p = nn.Parameter(torch.randn(self.num_classes), requires_grad=True)
-        self.temperature = 1.0
-
-    def forward(self, hard=True):
-        logits = F.gumbel_softmax(self.p, tau=self.temperature, hard=hard)
-        one_hot_index = torch.argmax(logits)
-        # return one_hot_index
-        return self.num_classes
-
+BASE_LATENCY = 1
 
 def _make_divisible(v, divisor, min_value=None):
     # ensure that all layers have a channel number that is divisible by 8
@@ -135,7 +121,6 @@ class InvertedResidualBase(nn.Module):
         expansion_mask = expansion_mask.view(1, -1, 1, 1)
         out_channel_mask = out_channel_mask.view(1, -1, 1, 1)
 
-
         if_pw = expansion_sum == x.shape[1]
 
         # point_wise conv
@@ -252,31 +237,31 @@ class UNetMobileNetv3(nn.Module):
             16, 24, 1, 1, expansion=1, out_channel_mask=self.out_channel_mask_1
         )
 
-        self.repeat_mask_2 = RepeatMask(2)
+        self.repeat_mask_2 = nn.Parameter(torch.ones(2, requires_grad=True))
         self.out_channel_mask_2 = nn.Parameter(torch.ones(32, requires_grad=True))
         self.irb_bottleneck2 = self.irb_bottleneck(
             24, 32, 2, 2, expansion, self.out_channel_mask_2
         )
 
-        self.repeat_mask_3 = RepeatMask(3)
+        self.repeat_mask_3 = nn.Parameter(torch.ones(3, requires_grad=True))
         self.out_channel_mask_3 = nn.Parameter(torch.ones(48, requires_grad=True))
         self.irb_bottleneck3 = self.irb_bottleneck(
             32, 48, 3, 2, expansion, self.out_channel_mask_3
         )
 
-        self.repeat_mask_4 = RepeatMask(4)
+        self.repeat_mask_4 = nn.Parameter(torch.ones(4, requires_grad=True))
         self.out_channel_mask_4 = nn.Parameter(torch.ones(96, requires_grad=True))
         self.irb_bottleneck4 = self.irb_bottleneck(
             48, 96, 4, 2, expansion, self.out_channel_mask_4
         )
 
-        self.repeat_mask_5 = RepeatMask(4)
+        self.repeat_mask_5 = nn.Parameter(torch.ones(4, requires_grad=True))
         self.out_channel_mask_5 = nn.Parameter(torch.ones(128, requires_grad=True))
         self.irb_bottleneck5 = self.irb_bottleneck(
             96, 128, 4, 2, expansion, self.out_channel_mask_5
         )
 
-        self.repeat_mask_6 = RepeatMask(3)
+        self.repeat_mask_6 = nn.Parameter(torch.ones(3, requires_grad=True))
         self.out_channel_mask_6 = nn.Parameter(torch.ones(256, requires_grad=True))
         self.irb_bottleneck6 = self.irb_bottleneck(
             128, 256, 3, 1, expansion, self.out_channel_mask_6
@@ -359,13 +344,11 @@ class UNetMobileNetv3(nn.Module):
                 latency += cur_lat
 
         else:
-            repeat_mask = block_mask.forward()
+            block_mask = torch.sigmoid(block_mask)
             for i in range(len(blocks)):
                 block = blocks[i]
                 x, cur_lat = block(x)
-                latency += cur_lat
-                if i + 1 == repeat_mask:
-                    break
+                latency += cur_lat * block_mask[i]
 
         return x, latency
 
@@ -417,16 +400,24 @@ criterion = nn.L1Loss()
 num_epochs = 1000
 weight = 1e-8
 
+with torch.no_grad():
+    _, initial_latency = model(input)
+    target_latency = 0.5 * initial_latency.item()
+
 for epoch in range(num_epochs):
     optimizer.zero_grad()
 
     out, latency = model(input)
-    # loss = criterion(out, target)
+    loss = criterion(out, target)
+    latency_constraint = torch.relu(latency - target_latency)
     # if latency > latency_original * 0.1:
-    loss = latency * weight
+    loss += latency_constraint * weight
         # print(latency_original.item(), latency.item(), loss.item())
 
-    print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), latency_original.item()))
+    print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), initial_latency.item()))
     loss.backward()
+    print(torch.sum(model.repeat_mask_5).item())
     # print("******", model.irb_bottleneck2[0].expansion_mask.grad)
     optimizer.step()
+
+# print(torch.sum(model.irb_bottleneck2[0].expansion_mask).item())
