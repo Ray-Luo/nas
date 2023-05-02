@@ -8,7 +8,7 @@ class RepeatMask(nn.Module):
     def __init__(self, num_classes):
         super(RepeatMask, self).__init__()
         self.num_classes = num_classes
-        self.p = nn.Parameter(torch.randn(num_classes), requires_grad=True)
+        self.p = nn.Parameter(torch.randn(self.num_classes), requires_grad=True)
         self.temperature = 1.0
 
     def forward(self, hard=True):
@@ -31,7 +31,7 @@ def _make_divisible(v, divisor, min_value=None):
 
 
 class h_sigmoid(nn.Module):
-    def __init__(self, inplace=True):
+    def __init__(self, inplace=False):
         super(h_sigmoid, self).__init__()
         self.relu = nn.ReLU6(inplace=inplace)
 
@@ -40,7 +40,7 @@ class h_sigmoid(nn.Module):
 
 
 class h_swish(nn.Module):
-    def __init__(self, inplace=True):
+    def __init__(self, inplace=False):
         super(h_swish, self).__init__()
         self.sigmoid = h_sigmoid(inplace=inplace)
 
@@ -54,7 +54,7 @@ class SELayer(nn.Module):
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(channel, _make_divisible(channel // reduction, 8)),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Linear(_make_divisible(channel // reduction, 8), channel),
             h_sigmoid(),
         )
@@ -82,7 +82,7 @@ def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
     return nn.Sequential(
         nn.Conv2d(in_c, in_c, kernel_size=k, padding=p, groups=in_c, stride=s),
         nn.BatchNorm2d(num_features=in_c),
-        nn.ReLU6(inplace=True),
+        nn.ReLU6(inplace=False),
         nn.Conv2d(in_c, out_c, kernel_size=1),
     )
 
@@ -104,11 +104,11 @@ class InvertedResidualBase(nn.Module):
         self.identity = stride == 1 and inp == oup
 
         self.out_channel_mask = out_channel_mask
-        self.expansion_mask = nn.Parameter(torch.ones(hidden_dim, requires_grad=True))
+        self.expansion_mask = nn.Parameter(torch.ones(hidden_dim, requires_grad=True), requires_grad=True)
 
         self.act_mask = nn.Parameter(torch.zeros(1, requires_grad=True))
         self.hs = h_swish()
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=False)
 
         self.se_mask = nn.Parameter(torch.zeros(1, requires_grad=True))
         self.se = SELayer(hidden_dim)
@@ -134,31 +134,38 @@ class InvertedResidualBase(nn.Module):
         expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
             1, -1, 1, 1
         )
-        if_pw = torch.sum(expansion_mask) == x.shape[1]
+        expansion_sum = torch.sum(expansion_mask)
+        out_channel_sum = torch.sum(out_channel_mask)
+
+        if_pw = expansion_sum == x.shape[1]
 
         # point_wise conv
         if not if_pw:
             out = self.pw(x)
-            out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
-            latency += x.shape[1] * torch.sum(expansion_mask) * BASE_LATENCY # pw
-            latency += torch.sum(expansion_mask) * BASE_LATENCY # bn
+            hs_out = self.hs(out)
+            relu_out = self.relu(out)
+            out = act_mask * hs_out + (1 - act_mask) * relu_out
+            latency += x.shape[1] * expansion_sum * BASE_LATENCY # pw
+            latency += expansion_sum * BASE_LATENCY # bn
             latency += BASE_LATENCY # act
         else:
             out = x
 
         # depthwise conv
         out = self.dw(out)
-        out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
-        latency += torch.sum(expansion_mask) * torch.sum(expansion_mask) * BASE_LATENCY # dw
-        latency += torch.sum(expansion_mask) * BASE_LATENCY # bn
+        hs_out = self.hs(out)
+        relu_out = self.relu(out)
+        out = act_mask * hs_out + (1 - act_mask) * relu_out
+        latency += expansion_sum * expansion_sum * BASE_LATENCY # dw
+        latency += expansion_sum * BASE_LATENCY # bn
         latency += BASE_LATENCY # act
         out = self.se(out) * se_mask + (1 - se_mask) * self.id(out)
-        latency += torch.sum(expansion_mask).item() * BASE_LATENCY * se_mask.item()  + (1 - se_mask).item() * BASE_LATENCY # se
+        latency += expansion_sum.item() * BASE_LATENCY * se_mask.item()  + (1 - se_mask).item() * BASE_LATENCY # se
         out = out * expansion_mask
         # pointwise linear projection
         out = self.pw_linear(out)
-        latency += torch.sum(expansion_mask) * torch.sum(out_channel_mask) * BASE_LATENCY # pw-linear
-        latency += torch.sum(out_channel_mask) * BASE_LATENCY # bn
+        latency += expansion_sum * out_channel_sum * BASE_LATENCY # pw-linear
+        latency += out_channel_sum * BASE_LATENCY # bn
 
         if self.identity:
             out = x + out
@@ -311,7 +318,7 @@ class UNetMobileNetv3(nn.Module):
         conv = nn.Sequential(
             nn.Conv2d(in_c, in_c, kernel_size=k, padding=p, groups=in_c, stride=s),
             nn.BatchNorm2d(num_features=in_c),
-            nn.ReLU6(inplace=True),
+            nn.ReLU6(inplace=False),
             nn.Conv2d(in_c, out_c, kernel_size=1),
         )
         return conv
@@ -396,14 +403,31 @@ class UNetMobileNetv3(nn.Module):
         d5 += x2
         d6, lat14 = self.irb_forward(self.D_irb6, d5)
         d7, lat15 = self.irb_forward(self.D_irb7, d6)
-        return d7, sum([lat2,lat3,lat4,lat5,lat6,lat7,lat8,lat9,lat10,lat11,lat12,lat13,lat14,lat15,])
+        return d7, lat2+lat3+lat4+lat5+lat6+lat7+lat8+lat9+lat10+lat11+lat12+lat13+lat14+lat15
 
 
+target = torch.randn(1,3,512,512).cuda()
+input = torch.randn(1, 3, 512, 512).cuda()
+model = UNetMobileNetv3(512).cuda()
+out, latency_original = model(input)
 
-input = torch.randn(1, 3, 512, 512)
-model = UNetMobileNetv3(512)
-out, latency = model(input)
-print(out.shape, latency.item())
+import torch.optim as optim
 
-um_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print("Number of model parameters: ", um_params)
+optimizer = optim.SGD(model.parameters(), lr=1e-3)
+criterion = nn.L1Loss()
+num_epochs = 1000
+weight = 1e-8
+
+for epoch in range(num_epochs):
+    optimizer.zero_grad()
+
+    out, latency = model(input)
+    # loss = criterion(out, target)
+    # if latency > latency_original * 0.1:
+    loss = latency * weight
+        # print(latency_original.item(), latency.item(), loss.item())
+
+    print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), latency_original.item()))
+    loss.backward()
+    print("******", model.irb_bottleneck2[0].expansion_mask.grad)
+    optimizer.step()

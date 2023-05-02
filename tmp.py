@@ -5,94 +5,82 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class RepeatMask(nn.Module):
-    def __init__(self, num_classes):
-        super(RepeatMask, self).__init__()
-        self.p = nn.Parameter(torch.randn(num_classes), requires_grad=True)
-        self.temperature = 1.0
+BASE_LATENCY = 10
 
-    def forward(self, hard=True):
-        logits = F.gumbel_softmax(self.p, tau=self.temperature, hard=hard)
-        one_hot_index = torch.argmax(logits)
-        return one_hot_index
+class InvertedResidualBase(nn.Module):
+    def __init__(
+        self,
+        inp,
+        oup,
+        stride,
+        expansion=6,
+        out_channel_mask=None,
+    ):
+        super(InvertedResidualBase, self).__init__()
+        assert stride in [1, 2]
 
-def _make_divisible(v, divisor, min_value=None):
-    # ensure that all layers have a channel number that is divisible by 8
+        hidden_dim = expansion * inp
 
-    if min_value is None:
-        min_value = divisor
-    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    # Make sure that round down does not go down by more than 10%.
-    if new_v < 0.9 * v:
-        new_v += divisor
-    return new_v
+        self.identity = stride == 1 and inp == oup
 
+        self.out_channel_mask = out_channel_mask
+        self.expansion_mask = nn.Parameter(torch.ones(hidden_dim, requires_grad=True), requires_grad=True)
 
-class h_sigmoid(nn.Module):
-    def __init__(self, inplace=True):
-        super(h_sigmoid, self).__init__()
-        self.relu = nn.ReLU6(inplace=inplace)
+        self.act_mask = nn.Parameter(torch.zeros(1, requires_grad=True))
 
-    def forward(self, x):
-        return self.relu(x + 3) / 6
+        self.relu = nn.ReLU(inplace=False)
 
+        self.se_mask = nn.Parameter(torch.zeros(1, requires_grad=True))
+        self.id = nn.Identity()
 
-class h_swish(nn.Module):
-    def __init__(self, inplace=True):
-        super(h_swish, self).__init__()
-        self.sigmoid = h_sigmoid(inplace=inplace)
+        self.pw = nn.Sequential(
+            nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+        )
 
-    def forward(self, x):
-        return x * self.sigmoid(x)
-
-
-class SELayer(nn.Module):
-    def __init__(self, channel, reduction=4):
-        super(SELayer, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channel, _make_divisible(channel // reduction, 8)),
-            nn.ReLU(inplace=True),
-            nn.Linear(_make_divisible(channel // reduction, 8), channel),
-            h_sigmoid(),
+        self.pw_linear = nn.Sequential(
+            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(oup),
         )
 
     def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y
+        latency = 0
+
+        expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
+            1, -1, 1, 1
+        )
+        expansion_sum = torch.sum(expansion_mask)
+
+        # point_wise conv
+
+        out = self.pw(x)
+        latency += x.shape[1] * expansion_sum * BASE_LATENCY # pw
+        latency += expansion_sum * BASE_LATENCY # bn
+        latency += BASE_LATENCY # act
+
+        return out, latency
 
 
-def conv_3x3_bn(inp, oup, stride):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1, bias=False), nn.BatchNorm2d(oup), h_swish()
-    )
+target = torch.randn(1,3,512,512).cuda()
+input = torch.randn(1, 3, 512, 512).cuda()
+model = InvertedResidualBase(3,3,1).cuda()
+out, latency_original = model(input)
 
+import torch.optim as optim
 
-def conv_1x1_bn(inp, oup):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False), nn.BatchNorm2d(oup), h_swish()
-    )
+optimizer = optim.SGD(model.parameters(), lr=1e-3)
+criterion = nn.L1Loss()
+num_epochs = 1000
+weight = 1e-8
 
+for epoch in range(num_epochs):
+    optimizer.zero_grad()
 
-def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
-    return nn.Sequential(
-        nn.Conv2d(in_c, in_c, kernel_size=k, padding=p, groups=in_c, stride=s),
-        nn.BatchNorm2d(num_features=in_c),
-        nn.ReLU6(inplace=True),
-        nn.Conv2d(in_c, out_c, kernel_size=1),
-    )
+    out, latency = model(input)
 
-class BinaryParameter(nn.Module):
-    def __init__(self):
-        super(BinaryParameter, self).__init__()
-        self.expansion_mask = nn.Parameter(torch.ones(6*6, requires_grad=True))
+    loss = latency * weight
 
-    def forward(self):
-        return torch.round(torch.sigmoid(self.p))
-
-model = SELayer(96)
-
-um_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print("Number of model parameters: ", um_params)
+    print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), latency_original.item()))
+    loss.backward()
+    print("******", model.expansion_mask.grad)
+    optimizer.step()
