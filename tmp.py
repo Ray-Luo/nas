@@ -61,14 +61,58 @@ class InvertedResidualBase(nn.Module):
         return out, latency
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ChannelMaskedConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):
+        super(ChannelMaskedConv2d, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
+        self.mask = nn.Parameter(torch.ones(in_channels), requires_grad=True)
+
+    def forward(self, x):
+        # Normalize the mask to have values between 0 and 1
+        mask = torch.sigmoid(self.mask)
+        latency = torch.sum(mask)
+
+        # Reshape and expand the mask to match the input tensor shape
+        mask_reshaped = mask.view(
+            1, -1, 1, 1
+        ).expand_as(x)
+
+        # Apply the mask to the input tensor
+        x_masked = x * mask_reshaped
+
+        # Pass the masked input through the convolution layer
+        return self.conv(x_masked), latency
+
+class ThreeLayerConvNet(nn.Module):
+    def __init__(self):
+        super(ThreeLayerConvNet, self).__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        self.conv2 = ChannelMaskedConv2d(16, 32, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(32, 3, kernel_size=3, padding=1)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x, latency = self.conv2(x)
+        x = F.relu(x)
+        x = F.relu(self.conv3(x))
+        return x, latency
+
+# Instantiate the network
+model = ThreeLayerConvNet().cuda()
+
+
 target = torch.randn(1,3,512,512).cuda()
 input = torch.randn(1, 3, 512, 512).cuda()
-model = InvertedResidualBase(3,3,1).cuda()
-out, latency_original = model(input)
+# model = InvertedResidualBase(3,3,1).cuda()
+# out, latency_original = model(input)
 
 import torch.optim as optim
 
-optimizer = optim.SGD(model.parameters(), lr=1e-3)
+optimizer = optim.SGD(model.parameters(), lr=1e-1)
 criterion = nn.L1Loss()
 num_epochs = 1000
 weight = 1e-8
@@ -78,9 +122,14 @@ for epoch in range(num_epochs):
 
     out, latency = model(input)
 
-    loss = latency * weight
+    loss = criterion(out, target)
+    loss += latency
 
-    print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), latency_original.item()))
+
+    # loss = latency * weight
+
+    # print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), latency_original.item()))
     loss.backward()
-    print("******", model.expansion_mask.grad)
+    # print("******", model.conv2.mask.grad)
+    print("******", loss.item())
     optimizer.step()
