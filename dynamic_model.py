@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 BASE_LATENCY = 1
 
@@ -398,7 +397,7 @@ import torch.optim as optim
 optimizer = optim.SGD(model.parameters(), lr=1e-3)
 criterion = nn.L1Loss()
 num_epochs = 1000
-weight = 1e-8
+weight = 1e-7
 
 with torch.no_grad():
     _, initial_latency = model(input)
