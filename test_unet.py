@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 
@@ -71,68 +72,96 @@ def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
 
 
 class InvertedResidualBlock(nn.Module):
-    def __init__(self, inp, oup, stride, expansion, use_se=False, use_hs=False):
+    def __init__(
+        self,
+        inp,
+        oup,
+        stride,
+        expansion_mask=None,
+        out_channel_mask=None,
+        use_se=False,
+        use_hs=False,
+    ):
         super(InvertedResidualBlock, self).__init__()
         assert stride in [1, 2]
 
-        hidden_dim = expansion * inp
+        hidden_dim = 6 * inp
 
         self.identity = stride == 1 and inp == oup
 
-        if inp == hidden_dim:
-            self.conv = nn.Sequential(
-                # dw
-                nn.Conv2d(
-                    hidden_dim,
-                    hidden_dim,
-                    3,
-                    stride,
-                    (3 - 1) // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # Squeeze-and-Excite
-                SELayer(hidden_dim) if use_se else nn.Identity(),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
-        else:
-            self.conv = nn.Sequential(
-                # pw
-                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # dw
-                nn.Conv2d(
-                    hidden_dim,
-                    hidden_dim,
-                    3,
-                    stride,
-                    (3 - 1) // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                # Squeeze-and-Excite
-                SELayer(hidden_dim) if use_se else nn.Identity(),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
+        self.out_channel_mask = out_channel_mask
+        self.expansion_mask = expansion_mask # nn.Parameter(torch.rand(hidden_dim))
+
+        self.act_mask = torch.Tensor([0])
+        self.hs = h_swish()
+        self.relu = nn.ReLU(inplace=True)
+
+        self.pw = nn.Sequential(
+            nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+        )
+
+        self.dw = nn.Sequential(
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                3,
+                stride,
+                (3 - 1) // 2,
+                groups=hidden_dim,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+        )
+        self.se = SELayer(hidden_dim) if use_se else nn.Identity()
+        self.pw_linear = nn.Sequential(
+            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(oup),
+        )
 
     def forward(self, x):
-        if self.identity:
-            return x + self.conv(x)
+        act_mask = torch.round(torch.sigmoid(self.act_mask))
+        out_channel_mask = torch.round(torch.sigmoid(self.out_channel_mask)).view(
+            1, -1, 1, 1
+        )
+        expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
+            1, -1, 1, 1
+        )
+        if_pw = torch.sum(expansion_mask) == x.shape[1]
+
+        # point_wise conv
+        if not if_pw:
+            out = self.pw(x)
+            out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
         else:
-            return self.conv(x)
+            out = x
+
+        # depthwise conv
+        out = self.dw(out)
+        out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+        out = self.se(out)
+        out = out * expansion_mask
+        # pointwise linear projection
+        out = self.pw_linear(out)
+
+        if self.identity:
+            out = x + out
+
+        out = out * out_channel_mask
+        return out
 
 
 class UpInvertedResidualBlock(nn.Module):
-    def __init__(self, inp, oup, stride=2, expansion=6, use_se=False, use_hs=False):
+    def __init__(
+        self,
+        inp,
+        oup,
+        stride,
+        expansion,
+        out_channel_mask=None,
+        use_se=False,
+        use_hs=False,
+    ):
         super(UpInvertedResidualBlock, self).__init__()
         assert stride in [1, 2]
 
@@ -140,156 +169,221 @@ class UpInvertedResidualBlock(nn.Module):
 
         self.identity = stride == 1 and inp == oup
 
-        if inp == hidden_dim:
-            self.conv = nn.Sequential(
-                # dw
-                nn.ConvTranspose2d(
-                    hidden_dim,
-                    hidden_dim,
-                    4,
-                    stride,
-                    (4 - 1) // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # Squeeze-and-Excite
-                SELayer(hidden_dim) if use_se else nn.Identity(),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
-        else:
-            self.conv = nn.Sequential(
-                # pw
-                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # dw
-                nn.ConvTranspose2d(
-                    hidden_dim,
-                    hidden_dim,
-                    4,
-                    stride,
-                    (4 - 1) // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                # Squeeze-and-Excite
-                SELayer(hidden_dim) if use_se else nn.Identity(),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
+        self.out_channel_mask = out_channel_mask
+        self.expansion_mask = nn.Parameter(torch.rand(hidden_dim))
 
-    def forward(self, x):
-        if self.identity:
-            return x + self.conv(x)
-        else:
-            return self.conv(x)
+        self.act_mask = nn.Parameter(torch.rand(1), requires_grad=True)
+        self.hs = h_swish()
+        self.relu = nn.ReLU(inplace=True)
 
-
-class UNetMobileNetv3(nn.Module):
-    """
-    Modified UNet with inverted residual block and depthwise seperable convolution
-    """
-
-    def __init__(self, out_size):
-        super(UNetMobileNetv3, self).__init__()
-        self.out_size = out_size
-
-        expansion = 6
-
-        # encoding arm
-        self.conv3x3 = self.depthwise_conv(3, 16, p=1, s=2)
-        self.irb_bottleneck1 = self.irb_bottleneck(16, 24, 1, 1, 1)
-        self.irb_bottleneck2 = self.irb_bottleneck(24, 32, 2, 2, expansion)
-        self.irb_bottleneck3 = self.irb_bottleneck(32, 48, 3, 2, expansion)
-        self.irb_bottleneck4 = self.irb_bottleneck(48, 96, 4, 2, expansion)
-        self.irb_bottleneck5 = self.irb_bottleneck(96, 128, 4, 2, expansion)
-        self.irb_bottleneck6 = self.irb_bottleneck(128, 256, 3, 1, expansion)
-        self.irb_bottleneck7 = self.irb_bottleneck(256, 320, 1, 2, expansion)
-        # decoding arm
-        self.D_irb1 = self.irb_bottleneck(320, 128, 1, 2, expansion, True)
-        self.D_irb2 = self.irb_bottleneck(128, 96, 1, 2, expansion, True)
-        self.D_irb3 = self.irb_bottleneck(96, 48, 1, 2, expansion, True)
-        self.D_irb4 = self.irb_bottleneck(48, 32, 1, 2, expansion, True)
-        self.D_irb5 = self.irb_bottleneck(32, 24, 1, 2, expansion, True)
-        self.D_irb6 = self.irb_bottleneck(24, 16, 1, 2, expansion, True)
-        self.D_irb7 = self.irb_bottleneck(16, 3, 1, 1, expansion, False)
-        # self.DConv4x4 = nn.ConvTranspose2d(32, 16, 4, 2, 1, groups=16, bias=False)
-        # Final layer: output channel number can be changed as per the usecase
-        # self.conv1x1_decode = nn.Conv2d(16, 3, kernel_size=1, stride=1)
-
-    def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
-        """
-        optimized convolution by combining depthwise convolution and
-        pointwise convolution.
-        """
-        conv = nn.Sequential(
-            nn.Conv2d(in_c, in_c, kernel_size=k, padding=p, groups=in_c, stride=s),
-            nn.BatchNorm2d(num_features=in_c),
-            nn.ReLU6(inplace=True),
-            nn.Conv2d(in_c, out_c, kernel_size=1),
+        self.pw = nn.Sequential(
+            nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(hidden_dim),
         )
-        return conv
 
-    def irb_bottleneck(self, in_c, out_c, n, s, t, d=False):
-        """
-        create a series of inverted residual blocks.
-        """
-        convs = []
-        if d:
-            xx = UpInvertedResidualBlock(in_c, out_c, s, t)
-            convs.append(xx)
-            if n > 1:
-                for _ in range(1, n):
-                    xx = UpInvertedResidualBlock(out_c, out_c, 1, t)
-                    convs.append(xx)
-            conv = nn.Sequential(*convs)
-        else:
-            xx = InvertedResidualBlock(in_c, out_c, s, t)
-            convs.append(xx)
-            if n > 1:
-                for _ in range(1, n):
-                    xx = InvertedResidualBlock(out_c, out_c, 1, t)
-                    convs.append(xx)
-            conv = nn.Sequential(*convs)
-        return conv
+        self.dw = nn.Sequential(
+            nn.ConvTranspose2d(
+                hidden_dim,
+                hidden_dim,
+                4,
+                stride,
+                (4 - 1) // 2,
+                groups=hidden_dim,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+        )
+        self.se = SELayer(hidden_dim) if use_se else nn.Identity()
+        self.pw_linear = nn.Sequential(
+            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(oup),
+        )
 
     def forward(self, x):
-        x1 = self.conv3x3(x)  # (32, 256, 256)
-        x2 = self.irb_bottleneck1(x1)  # (16,256,256) s1
-        x3 = self.irb_bottleneck2(x2)  # (24,128,128) s2
-        x4 = self.irb_bottleneck3(x3)  # (32,64,64) s3
-        x5 = self.irb_bottleneck4(x4)  # (64,32,32)
-        x6 = self.irb_bottleneck5(x5)  # (96,16,16) s4
-        x7 = self.irb_bottleneck6(x6)  # (160,16,16)
-        x8 = self.irb_bottleneck7(x7)  # (240,8,8)
+        act_mask = torch.round(torch.sigmoid(self.act_mask))
+        out_channel_mask = torch.round(torch.sigmoid(self.out_channel_mask)).view(
+            1, -1, 1, 1
+        )
+        expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
+            1, -1, 1, 1
+        )
+        if_pw = torch.sum(expansion_mask) == x.shape[1]
 
-        # Right arm / Decoding arm with skip connections
-        d1 = self.D_irb1(x8) + x6
-        d2 = self.D_irb2(d1) + x5
-        d3 = self.D_irb3(d2) + x4
-        d4 = self.D_irb4(d3) + x3
-        d5 = self.D_irb5(d4) + x2
-        d6 = self.D_irb6(d5)
-        d7 = self.D_irb7(d6)
-        return d7
+        # point_wise conv
+        if not if_pw:
+            out = self.pw(x)
+            out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+        else:
+            out = x
 
+        # depthwise conv
+        out = self.dw(out)
+        out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+        out = self.se(out)
+        out = out * expansion_mask
+        # pointwise linear projection
+        out = self.pw_linear(out)
+
+        if self.identity:
+            out = x + out
+
+        out = out * out_channel_mask
+        return out
+
+class InvertedResidualBlock2(nn.Module):
+    def __init__(
+        self,
+        inp,
+        oup,
+        stride,
+        expansion_mask=None,
+        out_channel_mask=None,
+        use_se=False,
+        use_hs=False,
+    ):
+        super(InvertedResidualBlock2, self).__init__()
+        assert stride in [1, 2]
+
+        hidden_dim = 6 * inp
+
+        self.identity = stride == 1 and inp == oup
+
+        self.out_channel_mask = out_channel_mask
+        self.expansion_mask = expansion_mask
+
+        self.act_mask = torch.Tensor([0])
+        self.hs = h_swish()
+        self.relu = nn.ReLU(inplace=True)
+
+        self.pw = nn.Sequential(
+            nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+        )
+
+        self.dw = nn.Sequential(
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                3,
+                stride,
+                (3 - 1) // 2,
+                groups=hidden_dim,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+        )
+        self.se = SELayer(hidden_dim) if use_se else nn.Identity()
+        self.pw_linear = nn.Sequential(
+            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(oup),
+        )
+
+    def forward_gt(self, x):
+        act_mask = torch.round(torch.sigmoid(self.act_mask))
+        if_pw = False
+
+        # point_wise conv
+        if not if_pw:
+            out = self.pw(x)
+            out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+            # print(out[:,:-3,:,:].shape, torch.sum(out[:,:-3,:,:]).item(),"*******")
+        else:
+            out = x
+
+        # depthwise conv
+        out = self.dw(out)
+        out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+        out = self.se(out)
+        print(out[:,:-3,:,:].shape, torch.sum(out[:,:-3,:,:]).item(),"**** 1 ***")
+        # pointwise linear projection
+        out = self.pw_linear(out * expansion_mask)
+        print(out.shape, torch.sum(out).item(), "**** 2 ***")
+
+        if self.identity:
+            out = x + out
+
+        print(out[:,:-1,:,:].shape, torch.sum(out[:,:-1,:,:]).item(),"**** 3 ***")
+        return out
+
+    def forward_test(self, x):
+        act_mask = torch.round(torch.sigmoid(self.act_mask))
+        # out_channel_mask = torch.round(torch.sigmoid(self.out_channel_mask)).view(
+        #     1, -1, 1, 1
+        # )
+        out_channel_mask = self.out_channel_mask
+        expansion_mask = self.expansion_mask
+        # expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
+        #     1, -1, 1, 1
+        # )
+        if_pw = torch.sum(expansion_mask) == x.shape[1]
+
+        # point_wise conv
+        if not if_pw:
+            out = self.pw(x)
+            out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+        else:
+            out = x
+
+        # depthwise conv
+        out = self.dw(out)
+        out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+        out = self.se(out)
+        out = out * expansion_mask
+        # pointwise linear projection
+        out = self.pw_linear(out)
+
+        if self.identity:
+            out = x + out
+
+        out = out * out_channel_mask
+        return out
+
+
+"""
+1. expansion with 6 and 1 zero is equivalent to with 5
+2. output with 6 and 1 zero is equivalent to with 5
+"""
+
+# input = torch.randn(1, 3, 512, 512)
+# out_channel_mask = torch.Tensor([1,1,1,1,1,1,1,1,1,0]).view(1, -1, 1, 1)
+# expansion = [1] * 3 * 6
+# expansion[-3:] = [0,0,0]
+# expansion_mask = torch.Tensor(expansion).view(1, -1, 1, 1)
+# m1 = InvertedResidualBlock2(
+#         3,
+#         10,
+#         1,
+#         expansion_mask=expansion_mask,
+#         out_channel_mask=out_channel_mask,
+#     )
+# out1 = m1.forward_gt(input)
+# print()
+# out2 = m1.forward_test(input)
 
 import torch
-a = torch.rand(1,3,512,512)
-model = UNetMobileNetv3(out_size=512)
-out = model(a)
-print(out.shape)
+import torch.nn as nn
+import torch.nn.functional as F
 
-num_params = sum(p.numel() for p in model.parameters())
+class GumbelSoftmaxOneHot(nn.Module):
+    def __init__(self, num_classes):
+        super(GumbelSoftmaxOneHot, self).__init__()
+        self.p = nn.Parameter(torch.randn(num_classes), requires_grad=True)
+        self.temperature = 1.0
 
-print('Number of parameters: {:,}'.format(num_params))
+    def forward(self, hard=True):
+        logits = F.gumbel_softmax(self.p, tau=self.temperature, hard=hard)
+        one_hot_index = torch.argmax(logits)
+        return one_hot_index
+
+num_classes = 5
+model = GumbelSoftmaxOneHot(num_classes)
+out = model()
+print(out + 1)
+
+optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+
+# print(torch.sum(out1).item(), torch.sum(out2).item())
 
 # import nni.retiarii.nn.pytorch as nn
 # from nn_meter import load_latency_predictor
