@@ -7,6 +7,10 @@ import torch.nn.functional as F
 
 BASE_LATENCY = 10
 
+def print_grad(grad):
+    print("Gradient:", grad)
+
+
 class InvertedResidualBase(nn.Module):
     def __init__(
         self,
@@ -70,6 +74,7 @@ class ChannelMaskedConv2d(nn.Module):
         super(ChannelMaskedConv2d, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
         self.mask = nn.Parameter(torch.ones(in_channels), requires_grad=True)
+        self.mask.register_hook(print_grad)
 
     def forward(self, x):
         # Normalize the mask to have values between 0 and 1
@@ -79,7 +84,9 @@ class ChannelMaskedConv2d(nn.Module):
         # Reshape and expand the mask to match the input tensor shape
         mask_reshaped = mask.view(
             1, -1, 1, 1
-        ).expand_as(x)
+        )
+
+        # latency = torch.sum(mask_reshaped)
 
         # Apply the mask to the input tensor
         x_masked = x * mask_reshaped
@@ -101,35 +108,45 @@ class ThreeLayerConvNet(nn.Module):
         x = F.relu(self.conv3(x))
         return x, latency
 
+if 1:
 # Instantiate the network
-model = ThreeLayerConvNet().cuda()
+    model = ThreeLayerConvNet().cuda()
 
 
-target = torch.randn(1,3,512,512).cuda()
-input = torch.randn(1, 3, 512, 512).cuda()
-# model = InvertedResidualBase(3,3,1).cuda()
-# out, latency_original = model(input)
+    target = torch.randn(1,3,512,512).cuda()
+    input = torch.randn(1, 3, 512, 512).cuda()
+    # model = InvertedResidualBase(3,3,1).cuda()
+    # out, latency_original = model(input)
 
-import torch.optim as optim
+    import torch.optim as optim
 
-optimizer = optim.SGD(model.parameters(), lr=1e-1)
-criterion = nn.L1Loss()
-num_epochs = 1000
-weight = 1e-8
+    optimizer = optim.SGD(model.parameters(), lr=1e-1)
+    criterion = nn.L1Loss()
+    num_epochs = 1000
+    weight = 1e-8
 
-for epoch in range(num_epochs):
-    optimizer.zero_grad()
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
 
-    out, latency = model(input)
+        out, latency = model(input)
 
-    loss = criterion(out, target)
-    loss += latency
+        # loss = criterion(out, target)
+        loss = latency
 
 
-    # loss = latency * weight
+        # loss = latency * weight
 
-    # print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), latency_original.item()))
-    loss.backward()
-    # print("******", model.conv2.mask.grad)
-    print("******", loss.item())
-    optimizer.step()
+        # print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), latency_original.item()))
+        loss.backward()
+        print("******", model.conv2.mask.grad)
+        # print("******", loss.item())
+        optimizer.step()
+
+import torch
+a = torch.randn((6,), requires_grad=True)
+x = torch.randn((2, 3), requires_grad=True)
+y = x.view((6,)).expand_as(a)
+z = torch.sum(y)
+z.backward()
+
+print(x.grad)

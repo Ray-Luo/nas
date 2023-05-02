@@ -126,16 +126,15 @@ class InvertedResidualBase(nn.Module):
 
     def forward(self, x):
         latency = 0
-        act_mask = torch.round(torch.sigmoid(self.act_mask))
-        se_mask = torch.round(torch.sigmoid(self.se_mask))
-        out_channel_mask = torch.round(torch.sigmoid(self.out_channel_mask)).view(
-            1, -1, 1, 1
-        )
-        expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
-            1, -1, 1, 1
-        )
+        act_mask = torch.sigmoid(self.act_mask)
+        se_mask = torch.sigmoid(self.se_mask)
+        out_channel_mask = torch.sigmoid(self.out_channel_mask)
+        expansion_mask = torch.sigmoid(self.expansion_mask)
         expansion_sum = torch.sum(expansion_mask)
         out_channel_sum = torch.sum(out_channel_mask)
+        expansion_mask = expansion_mask.view(1, -1, 1, 1)
+        out_channel_mask = out_channel_mask.view(1, -1, 1, 1)
+
 
         if_pw = expansion_sum == x.shape[1]
 
@@ -429,5 +428,5 @@ for epoch in range(num_epochs):
 
     print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), latency_original.item()))
     loss.backward()
-    print("******", model.irb_bottleneck2[0].expansion_mask.grad)
+    # print("******", model.irb_bottleneck2[0].expansion_mask.grad)
     optimizer.step()
