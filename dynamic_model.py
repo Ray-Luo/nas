@@ -87,7 +87,7 @@ def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
     )
 
 
-class InvertedResidualBlock(nn.Module):
+class InvertedResidualBase(nn.Module):
     def __init__(
         self,
         inp,
@@ -96,7 +96,7 @@ class InvertedResidualBlock(nn.Module):
         expansion=None,
         out_channel_mask=None,
     ):
-        super(InvertedResidualBlock, self).__init__()
+        super(InvertedResidualBase, self).__init__()
         assert stride in [1, 2]
 
         hidden_dim = expansion * inp
@@ -119,6 +119,70 @@ class InvertedResidualBlock(nn.Module):
             nn.BatchNorm2d(hidden_dim),
         )
 
+        self.pw_linear = nn.Sequential(
+            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(oup),
+        )
+
+    def forward(self, x):
+        latency = 0
+        act_mask = torch.round(torch.sigmoid(self.act_mask))
+        se_mask = torch.round(torch.sigmoid(self.se_mask))
+        out_channel_mask = torch.round(torch.sigmoid(self.out_channel_mask)).view(
+            1, -1, 1, 1
+        )
+        expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
+            1, -1, 1, 1
+        )
+        if_pw = torch.sum(expansion_mask) == x.shape[1]
+
+        # point_wise conv
+        if not if_pw:
+            out = self.pw(x)
+            out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+            latency += x.shape[1] * torch.sum(expansion_mask) * BASE_LATENCY # pw
+            latency += torch.sum(expansion_mask) * BASE_LATENCY # bn
+            latency += BASE_LATENCY # act
+        else:
+            out = x
+
+        # depthwise conv
+        out = self.dw(out)
+        out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
+        latency += torch.sum(expansion_mask) * torch.sum(expansion_mask) * BASE_LATENCY # dw
+        latency += torch.sum(expansion_mask) * BASE_LATENCY # bn
+        latency += BASE_LATENCY # act
+        out = self.se(out) * se_mask + (1 - se_mask) * self.id(out)
+        latency += torch.sum(expansion_mask).item() * BASE_LATENCY * se_mask.item()  + (1 - se_mask).item() * BASE_LATENCY # se
+        out = out * expansion_mask
+        # pointwise linear projection
+        out = self.pw_linear(out)
+        latency += torch.sum(expansion_mask) * torch.sum(out_channel_mask) * BASE_LATENCY # pw-linear
+        latency += torch.sum(out_channel_mask) * BASE_LATENCY # bn
+
+        if self.identity:
+            out = x + out
+
+        out = out * out_channel_mask
+        return out, latency
+
+
+class InvertedResidualBlock(InvertedResidualBase):
+    def __init__(
+        self,
+        inp,
+        oup,
+        stride,
+        expansion=None,
+        out_channel_mask=None,
+    ):
+        super().__init__(
+            inp,
+            oup,
+            stride,
+            expansion,
+            out_channel_mask,)
+        hidden_dim = expansion * inp
         self.dw = nn.Sequential(
             nn.Conv2d(
                 hidden_dim,
@@ -131,55 +195,9 @@ class InvertedResidualBlock(nn.Module):
             ),
             nn.BatchNorm2d(hidden_dim),
         )
-        self.pw_linear = nn.Sequential(
-            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(oup),
-        )
-
-    def forward(self, x):
-        latency = 0
-        act_mask = torch.round(torch.sigmoid(self.act_mask))
-        se_mask = torch.round(torch.sigmoid(self.se_mask))
-        out_channel_mask = torch.round(torch.sigmoid(self.out_channel_mask)).view(
-            1, -1, 1, 1
-        )
-        expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
-            1, -1, 1, 1
-        )
-        if_pw = torch.sum(expansion_mask) == x.shape[1]
-
-        # point_wise conv
-        if not if_pw:
-            out = self.pw(x)
-            out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
-            latency += x.shape[1] * torch.sum(expansion_mask) * BASE_LATENCY # pw
-            latency += torch.sum(expansion_mask) * BASE_LATENCY # bn
-            latency += BASE_LATENCY # act
-        else:
-            out = x
-
-        # depthwise conv
-        out = self.dw(out)
-        out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
-        latency += torch.sum(expansion_mask) * torch.sum(expansion_mask) * BASE_LATENCY # dw
-        latency += torch.sum(expansion_mask) * BASE_LATENCY # bn
-        latency += BASE_LATENCY # act
-        out = self.se(out) * se_mask + (1 - se_mask) * self.id(out)
-        latency += torch.sum(expansion_mask).item() * BASE_LATENCY * se_mask.item()  + (1 - se_mask).item() * BASE_LATENCY # se
-        out = out * expansion_mask
-        # pointwise linear projection
-        out = self.pw_linear(out)
-        latency += torch.sum(expansion_mask) * torch.sum(out_channel_mask) * BASE_LATENCY # pw-linear
-        latency += torch.sum(out_channel_mask) * BASE_LATENCY # bn
-
-        if self.identity:
-            out = x + out
-
-        out = out * out_channel_mask
-        return out, latency
 
 
-class UpInvertedResidualBlock(nn.Module):
+class UpInvertedResidualBlock(InvertedResidualBase):
     def __init__(
         self,
         inp,
@@ -188,29 +206,13 @@ class UpInvertedResidualBlock(nn.Module):
         expansion,
         out_channel_mask=None,
     ):
-        super(UpInvertedResidualBlock, self).__init__()
-        assert stride in [1, 2]
-
+        super().__init__(
+            inp,
+            oup,
+            stride,
+            expansion,
+            out_channel_mask,)
         hidden_dim = expansion * inp
-
-        self.identity = stride == 1 and inp == oup
-
-        self.out_channel_mask = out_channel_mask
-        self.expansion_mask = nn.Parameter(torch.ones(hidden_dim, requires_grad=True))
-
-        self.act_mask = nn.Parameter(torch.zeros(1, requires_grad=True))
-        self.hs = h_swish()
-        self.relu = nn.ReLU(inplace=True)
-
-        self.se_mask = nn.Parameter(torch.zeros(1, requires_grad=True))
-        self.se = SELayer(hidden_dim)
-        self.id = nn.Identity()
-
-        self.pw = nn.Sequential(
-            nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(hidden_dim),
-        )
-
         self.dw = nn.Sequential(
             nn.ConvTranspose2d(
                 hidden_dim,
@@ -223,52 +225,6 @@ class UpInvertedResidualBlock(nn.Module):
             ),
             nn.BatchNorm2d(hidden_dim),
         )
-        self.pw_linear = nn.Sequential(
-            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(oup),
-        )
-
-    def forward(self, x):
-        latency = 0
-        act_mask = torch.round(torch.sigmoid(self.act_mask))
-        se_mask = torch.round(torch.sigmoid(self.se_mask))
-        out_channel_mask = torch.round(torch.sigmoid(self.out_channel_mask)).view(
-            1, -1, 1, 1
-        )
-        expansion_mask = torch.round(torch.sigmoid(self.expansion_mask)).view(
-            1, -1, 1, 1
-        )
-        if_pw = torch.sum(expansion_mask) == x.shape[1]
-
-        # point_wise conv
-        if not if_pw:
-            out = self.pw(x)
-            out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
-            latency += x.shape[1] * torch.sum(expansion_mask) * BASE_LATENCY # pw
-            latency += torch.sum(expansion_mask) * BASE_LATENCY # bn
-            latency += BASE_LATENCY # act
-        else:
-            out = x
-
-        # depthwise conv
-        out = self.dw(out)
-        out = act_mask * self.hs(out) + (1 - act_mask) * self.relu(out)
-        latency += torch.sum(expansion_mask) * torch.sum(expansion_mask) * BASE_LATENCY # dw
-        latency += torch.sum(expansion_mask) * BASE_LATENCY # bn
-        latency += BASE_LATENCY # act
-        out = self.se(out) * se_mask + (1 - se_mask) * self.id(out)
-        latency += torch.sum(expansion_mask).item() * BASE_LATENCY * se_mask.item()  + (1 - se_mask).item() * BASE_LATENCY # se
-        out = out * expansion_mask
-        # pointwise linear projection
-        out = self.pw_linear(out)
-        latency += torch.sum(expansion_mask) * torch.sum(out_channel_mask) * BASE_LATENCY # pw-linear
-        latency += torch.sum(out_channel_mask) * BASE_LATENCY # bn
-
-        if self.identity:
-            out = x + out
-
-        out = out * out_channel_mask
-        return out, latency
 
 
 class UNetMobileNetv3(nn.Module):
