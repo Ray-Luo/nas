@@ -3,6 +3,7 @@ import torch.nn as nn
 
 BASE_LATENCY = 1
 
+
 def _make_divisible(v, divisor, min_value=None):
     # ensure that all layers have a channel number that is divisible by 8
 
@@ -89,7 +90,9 @@ class InvertedResidualBase(nn.Module):
         self.identity = stride == 1 and inp == oup
 
         self.out_channel_mask = out_channel_mask
-        self.expansion_mask = nn.Parameter(torch.ones(hidden_dim, requires_grad=True), requires_grad=True)
+        self.expansion_mask = nn.Parameter(
+            torch.ones(hidden_dim, requires_grad=True), requires_grad=True
+        )
 
         self.act_mask = nn.Parameter(torch.zeros(1, requires_grad=True))
         self.hs = h_swish()
@@ -128,9 +131,9 @@ class InvertedResidualBase(nn.Module):
             hs_out = self.hs(out)
             relu_out = self.relu(out)
             out = act_mask * hs_out + (1 - act_mask) * relu_out
-            latency += x.shape[1] * expansion_sum * BASE_LATENCY # pw
-            latency += expansion_sum * BASE_LATENCY # bn
-            latency += BASE_LATENCY # act
+            latency += x.shape[1] * expansion_sum * BASE_LATENCY  # pw
+            latency += expansion_sum * BASE_LATENCY  # bn
+            latency += BASE_LATENCY  # act
         else:
             out = x
 
@@ -139,16 +142,19 @@ class InvertedResidualBase(nn.Module):
         hs_out = self.hs(out)
         relu_out = self.relu(out)
         out = act_mask * hs_out + (1 - act_mask) * relu_out
-        latency += expansion_sum * expansion_sum * BASE_LATENCY # dw
-        latency += expansion_sum * BASE_LATENCY # bn
-        latency += BASE_LATENCY # act
+        latency += expansion_sum * expansion_sum * BASE_LATENCY  # dw
+        latency += expansion_sum * BASE_LATENCY  # bn
+        latency += BASE_LATENCY  # act
         out = self.se(out) * se_mask + (1 - se_mask) * self.id(out)
-        latency += expansion_sum.item() * BASE_LATENCY * se_mask.item()  + (1 - se_mask).item() * BASE_LATENCY # se
+        latency += (
+            expansion_sum.item() * BASE_LATENCY * se_mask.item()
+            + (1 - se_mask).item() * BASE_LATENCY
+        )  # se
         out = out * expansion_mask
         # pointwise linear projection
         out = self.pw_linear(out)
-        latency += expansion_sum * out_channel_sum * BASE_LATENCY # pw-linear
-        latency += out_channel_sum * BASE_LATENCY # bn
+        latency += expansion_sum * out_channel_sum * BASE_LATENCY  # pw-linear
+        latency += out_channel_sum * BASE_LATENCY  # bn
 
         if self.identity:
             out = x + out
@@ -171,7 +177,8 @@ class InvertedResidualBlock(InvertedResidualBase):
             oup,
             stride,
             expansion,
-            out_channel_mask,)
+            out_channel_mask,
+        )
         hidden_dim = expansion * inp
         self.dw = nn.Sequential(
             nn.Conv2d(
@@ -201,7 +208,8 @@ class UpInvertedResidualBlock(InvertedResidualBase):
             oup,
             stride,
             expansion,
-            out_channel_mask,)
+            out_channel_mask,
+        )
         hidden_dim = expansion * inp
         self.dw = nn.Sequential(
             nn.ConvTranspose2d(
@@ -347,6 +355,7 @@ class UNetMobileNetv3(nn.Module):
             for i in range(len(blocks)):
                 block = blocks[i]
                 x, cur_lat = block(x)
+                x = x * block_mask[i]
                 latency += cur_lat * block_mask[i]
 
         return x, latency
@@ -384,7 +393,24 @@ class UNetMobileNetv3(nn.Module):
         d5 += x2
         d6, lat14 = self.irb_forward(self.D_irb6, d5)
         d7, lat15 = self.irb_forward(self.D_irb7, d6)
-        return d7, lat2+lat3+lat4+lat5+lat6+lat7+lat8+lat9+lat10+lat11+lat12+lat13+lat14+lat15
+        return (
+            d7,
+            lat2
+            + lat3
+            + lat4
+            + lat5
+            + lat6
+            + lat7
+            + lat8
+            + lat9
+            + lat10
+            + lat11
+            + lat12
+            + lat13
+            + lat14
+            + lat15,
+        )
+
 
 
 target = torch.randn(1,3,512,512).cuda()
@@ -415,7 +441,7 @@ for epoch in range(num_epochs):
 
     print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), initial_latency.item()))
     loss.backward()
-    print(torch.sum(model.repeat_mask_5).item())
+    # print(torch.sum(model.repeat_mask_5).item())
     # print("******", model.irb_bottleneck2[0].expansion_mask.grad)
     optimizer.step()
 
