@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-BASE_LATENCY = 1
-
 
 def _make_divisible(v, divisor, min_value=None):
     # ensure that all layers have a channel number that is divisible by 8
@@ -85,6 +83,7 @@ class InvertedResidualBase(nn.Module):
         super(InvertedResidualBase, self).__init__()
         assert stride in [1, 2]
 
+        self.oup = oup
         hidden_dim = expansion * inp
 
         self.identity = stride == 1 and inp == oup
@@ -112,8 +111,55 @@ class InvertedResidualBase(nn.Module):
             nn.BatchNorm2d(oup),
         )
 
+    def get_mac(self, in_channels, out_channels, operations, input, output):
+        total_macs = 0
+        batch_size = 1
+        for operation in operations:
+            if isinstance(operation, nn.Conv2d):
+                _, _, h_out, w_out = output.size()
+                kernel_h, kernel_w = operation.kernel_size
+                stride_h, stride_w = operation.stride
+                groups = operation.groups
+
+                macs_per_output_element = (in_channels // groups) * kernel_h * kernel_w
+                num_output_elements = batch_size * out_channels * h_out * w_out
+                total_macs += macs_per_output_element * num_output_elements
+                if operation.bias is not None:
+                    total_macs += out_channels * h_out * w_out
+
+            elif isinstance(operation, nn.BatchNorm2d):
+                _, _, h_out, w_out = output.size()
+                num_output_elements = batch_size * out_channels * h_out * w_out
+                mac = 2 * num_output_elements
+                total_macs += mac
+
+            elif isinstance(operation, h_swish):
+                _, _, h_out, w_out = output.size()
+                mac = h_out * w_out * out_channels
+                total_macs += mac * 2
+
+            elif isinstance(operation, nn.ReLU):
+                _, _, h_out, w_out = output.size()
+                mac = h_out * w_out * out_channels
+                total_macs += mac
+
+            elif isinstance(operation, SELayer):
+                _, _, h_out, w_out = output.size()
+
+                avg_pool_mac = out_channels * h_out * w_out
+                fc_mac = 2 * out_channels * _make_divisible(out_channels // 4, 8)
+                elemwise_mul_macs = out_channels * h_out * w_out
+                relu_mac = h_out * w_out * _make_divisible(out_channels // 4, 8)
+                sigmoid_mac = h_out * w_out * out_channels
+
+                macs = avg_pool_mac + fc_mac + elemwise_mul_macs + relu_mac + sigmoid_mac
+                total_macs += macs
+
+            else:
+                raise NotImplementedError(f"Operation {type(operation)} not implemented")
+
+
     def forward(self, x):
-        latency = 0
         act_mask = torch.sigmoid(self.act_mask)
         se_mask = torch.sigmoid(self.se_mask)
         out_channel_mask = torch.sigmoid(self.out_channel_mask)
@@ -123,44 +169,57 @@ class InvertedResidualBase(nn.Module):
         expansion_mask = expansion_mask.view(1, -1, 1, 1)
         out_channel_mask = out_channel_mask.view(1, -1, 1, 1)
 
-        if_pw = expansion_sum == x.shape[1]
+        _, in_channels, height, width = x.size()
+        if_pw = expansion_sum == in_channels
+        total_macs = 0
 
         # point_wise conv
         if not if_pw:
-            out = self.pw(x)
-            hs_out = self.hs(out)
-            relu_out = self.relu(out)
+            pw_out = self.pw(x)
+            total_macs += self.get_mac(in_channels, expansion_sum, self.pw, x, pw_out)  # pw
+
+            hs_out = self.hs(pw_out)
+            hs_macs = self.get_mac(in_channels, expansion_sum, self.hs, x, out)  # hs
+
+            relu_out = self.relu(pw_out)
+            relu_macs = self.get_mac(in_channels, expansion_sum, self.relu, x, out)  # relu
+
             out = act_mask * hs_out + (1 - act_mask) * relu_out
-            latency += x.shape[1] * expansion_sum * BASE_LATENCY  # pw
-            latency += expansion_sum * BASE_LATENCY  # bn
-            latency += BASE_LATENCY  # act
+            total_macs += act_mask * hs_macs + (1 - act_mask) * relu_macs
         else:
             out = x
 
         # depthwise conv
-        out = self.dw(out)
-        hs_out = self.hs(out)
-        relu_out = self.relu(out)
+        dw_out = self.dw(out)
+        total_macs += self.get_mac(expansion_sum, expansion_sum, self.dw, out, dw_out)  # pw
+
+        hs_out = self.hs(dw_out)
+        hs_macs = self.get_mac(expansion_sum, expansion_sum, self.hs, dw_out, hs_out)  # hs
+
+        relu_out = self.relu(dw_out)
+        relu_macs = self.get_mac(expansion_sum, expansion_sum, self.relu, dw_out, relu_out)  # relu
+
         out = act_mask * hs_out + (1 - act_mask) * relu_out
-        latency += expansion_sum * expansion_sum * BASE_LATENCY  # dw
-        latency += expansion_sum * BASE_LATENCY  # bn
-        latency += BASE_LATENCY  # act
+        total_macs += act_mask * hs_macs + (1 - act_mask) * relu_macs
+
+        se_out = self.se(out)
+        se_mac = self.get_mac(expansion_sum, expansion_sum, self.se, out, se_out)  # relu
+        id_mac = 0
+        total_macs += se_mask * se_mac + (1 - se_mask) * id_mac
         out = self.se(out) * se_mask + (1 - se_mask) * self.id(out)
-        latency += (
-            expansion_sum.item() * BASE_LATENCY * se_mask.item()
-            + (1 - se_mask).item() * BASE_LATENCY
-        )  # se
+
         out = out * expansion_mask
+
         # pointwise linear projection
-        out = self.pw_linear(out)
-        latency += expansion_sum * out_channel_sum * BASE_LATENCY  # pw-linear
-        latency += out_channel_sum * BASE_LATENCY  # bn
+        pwl_out = self.pw_linear(out)
+        total_macs += self.get_mac(expansion_sum, out_channel_sum, self.pw_linear, out, pwl_out)  # pw
+
 
         if self.identity:
-            out = x + out
+            out = x + pwl_out
 
-        out = out * out_channel_mask
-        return out, latency
+        out = pwl_out * out_channel_mask
+        return out, total_macs
 
 
 class InvertedResidualBlock(InvertedResidualBase):
@@ -237,17 +296,16 @@ class UNetMobileNetv3(nn.Module):
         expansion = 6
 
         # encoding arm
-        self.conv3x3 = self.depthwise_conv(3, 16, p=1, s=2)
-
-        self.out_channel_mask_1 = nn.Parameter(torch.ones(24, requires_grad=True))
+        self.repeat_mask_1 = nn.Parameter(torch.ones(2, requires_grad=True))
+        self.out_channel_mask_1 = nn.Parameter(torch.ones(16, requires_grad=True))
         self.irb_bottleneck1 = self.irb_bottleneck(
-            16, 24, 1, 1, expansion=1, out_channel_mask=self.out_channel_mask_1
+            3, 16, 2, 2, expansion, out_channel_mask=self.out_channel_mask_1
         )
 
         self.repeat_mask_2 = nn.Parameter(torch.ones(2, requires_grad=True))
         self.out_channel_mask_2 = nn.Parameter(torch.ones(32, requires_grad=True))
         self.irb_bottleneck2 = self.irb_bottleneck(
-            24, 32, 2, 2, expansion, self.out_channel_mask_2
+            16, 32, 2, 2, expansion, self.out_channel_mask_2
         )
 
         self.repeat_mask_3 = nn.Parameter(torch.ones(3, requires_grad=True))
@@ -271,12 +329,12 @@ class UNetMobileNetv3(nn.Module):
         self.repeat_mask_6 = nn.Parameter(torch.ones(3, requires_grad=True))
         self.out_channel_mask_6 = nn.Parameter(torch.ones(256, requires_grad=True))
         self.irb_bottleneck6 = self.irb_bottleneck(
-            128, 256, 3, 1, expansion, self.out_channel_mask_6
+            128, 256, 3, 2, expansion, self.out_channel_mask_6
         )
 
         self.out_channel_mask_7 = nn.Parameter(torch.ones(320, requires_grad=True))
         self.irb_bottleneck7 = self.irb_bottleneck(
-            256, 320, 1, 2, expansion, self.out_channel_mask_7
+            256, 320, 1, 1, expansion, self.out_channel_mask_7
         )
 
         # decoding arm
@@ -293,16 +351,11 @@ class UNetMobileNetv3(nn.Module):
             48, 32, 1, 2, expansion, self.out_channel_mask_2, True
         )
         self.D_irb5 = self.irb_bottleneck(
-            32, 24, 1, 2, expansion, self.out_channel_mask_1, True
+            32, 16, 1, 2, expansion, self.out_channel_mask_1, True
         )
-
-        self.out_channel_mask_8 = nn.Parameter(torch.ones(16), requires_grad=False)
+        self.out_channel = nn.Parameter(torch.ones(3), requires_grad=False)
         self.D_irb6 = self.irb_bottleneck(
-            24, 16, 1, 2, expansion, self.out_channel_mask_8, True
-        )
-        self.out_channel_mask_9 = nn.Parameter(torch.ones(3), requires_grad=False)
-        self.D_irb7 = self.irb_bottleneck(
-            16, 3, 1, 1, expansion, self.out_channel_mask_9, False
+            16, 3, 1, 2, expansion, self.out_channel, True
         )
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
@@ -361,24 +414,24 @@ class UNetMobileNetv3(nn.Module):
         return x, latency
 
     def forward(self, x):
-        x1 = self.conv3x3(x)  # (32, 256, 256)
-        x2, lat2 = self.irb_forward(self.irb_bottleneck1, x1)  # (16,256,256) s1
+        x1 = x
+        x2, lat2 = self.irb_forward(self.irb_bottleneck1, x1)
         x3, lat3 = self.irb_forward(
             self.irb_bottleneck2, x2, self.repeat_mask_2
-        )  # (24,128,128) s2
+        )
         x4, lat4 = self.irb_forward(
             self.irb_bottleneck3, x3, self.repeat_mask_3
-        )  # (32,64,64) s3
+        )
         x5, lat5 = self.irb_forward(
             self.irb_bottleneck4, x4, self.repeat_mask_4
-        )  # (64,32,32)
+        )
         x6, lat6 = self.irb_forward(
             self.irb_bottleneck5, x5, self.repeat_mask_5
-        )  # (96,16,16) s4
+        )
         x7, lat7 = self.irb_forward(
             self.irb_bottleneck6, x6, self.repeat_mask_6
-        )  # (160,16,16)
-        x8, lat8 = self.irb_forward(self.irb_bottleneck7, x7)  # (240,8,8)
+        )
+        x8, lat8 = self.irb_forward(self.irb_bottleneck7, x7)
 
         # Right arm / Decoding arm with skip connections
         d1, lat9 = self.irb_forward(self.D_irb1, x8)
@@ -392,9 +445,8 @@ class UNetMobileNetv3(nn.Module):
         d5, lat13 = self.irb_forward(self.D_irb5, d4)
         d5 += x2
         d6, lat14 = self.irb_forward(self.D_irb6, d5)
-        d7, lat15 = self.irb_forward(self.D_irb7, d6)
         return (
-            d7,
+            d6,
             lat2
             + lat3
             + lat4
@@ -408,8 +460,8 @@ class UNetMobileNetv3(nn.Module):
             + lat12
             + lat13
             + lat14
-            + lat15,
         )
+
 
 
 
@@ -417,32 +469,33 @@ target = torch.randn(1,3,512,512).cuda()
 input = torch.randn(1, 3, 512, 512).cuda()
 model = UNetMobileNetv3(512).cuda()
 out, latency_original = model(input)
+print(out.shape, latency_original.item())
 
-import torch.optim as optim
+# import torch.optim as optim
 
-optimizer = optim.SGD(model.parameters(), lr=1e-3)
-criterion = nn.L1Loss()
-num_epochs = 1000
-weight = 1e-7
+# optimizer = optim.SGD(model.parameters(), lr=1e-3)
+# criterion = nn.L1Loss()
+# num_epochs = 1000
+# weight = 1e-7
 
-with torch.no_grad():
-    _, initial_latency = model(input)
-    target_latency = 0.5 * initial_latency.item()
+# with torch.no_grad():
+#     _, initial_latency = model(input)
+#     target_latency = 0.5 * initial_latency.item()
 
-for epoch in range(num_epochs):
-    optimizer.zero_grad()
+# for epoch in range(num_epochs):
+#     optimizer.zero_grad()
 
-    out, latency = model(input)
-    loss = criterion(out, target)
-    latency_constraint = torch.relu(latency - target_latency)
-    # if latency > latency_original * 0.1:
-    loss += latency_constraint * weight
-        # print(latency_original.item(), latency.item(), loss.item())
+#     out, latency = model(input)
+#     loss = criterion(out, target)
+#     latency_constraint = torch.relu(latency - target_latency)
+#     # if latency > latency_original * 0.1:
+#     loss += latency_constraint * weight
+#         # print(latency_original.item(), latency.item(), loss.item())
 
-    print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), initial_latency.item()))
-    loss.backward()
-    # print(torch.sum(model.repeat_mask_5).item())
-    # print("******", model.irb_bottleneck2[0].expansion_mask.grad)
-    optimizer.step()
+#     print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), initial_latency.item()))
+#     loss.backward()
+#     # print(torch.sum(model.repeat_mask_5).item())
+#     # print("******", model.irb_bottleneck2[0].expansion_mask.grad)
+#     optimizer.step()
 
 # print(torch.sum(model.irb_bottleneck2[0].expansion_mask).item())
