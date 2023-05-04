@@ -296,43 +296,43 @@ class UNetMobileNetv3(nn.Module):
         expansion = 6
 
         # encoding arm
-        self.repeat_mask_1 = nn.Parameter(torch.ones(2, requires_grad=True))
+        self.repeat_mask_1 = 10 * nn.Parameter(torch.ones(2, requires_grad=True))
         self.out_channel_mask_1 = nn.Parameter(torch.ones(16, requires_grad=True))
         self.irb_bottleneck1 = self.irb_bottleneck(
             3, 16, 2, 2, expansion, out_channel_mask=self.out_channel_mask_1
         )
 
-        self.repeat_mask_2 = nn.Parameter(torch.ones(2, requires_grad=True))
+        self.repeat_mask_2 = 10 * nn.Parameter(torch.ones(2, requires_grad=True))
         self.out_channel_mask_2 = nn.Parameter(torch.ones(32, requires_grad=True))
         self.irb_bottleneck2 = self.irb_bottleneck(
             16, 32, 2, 2, expansion, self.out_channel_mask_2
         )
 
-        self.repeat_mask_3 = nn.Parameter(torch.ones(3, requires_grad=True))
+        self.repeat_mask_3 = 10 * nn.Parameter(torch.ones(3, requires_grad=True))
         self.out_channel_mask_3 = nn.Parameter(torch.ones(48, requires_grad=True))
         self.irb_bottleneck3 = self.irb_bottleneck(
             32, 48, 3, 2, expansion, self.out_channel_mask_3
         )
 
-        self.repeat_mask_4 = nn.Parameter(torch.ones(4, requires_grad=True))
+        self.repeat_mask_4 = 10 * nn.Parameter(torch.ones(4, requires_grad=True))
         self.out_channel_mask_4 = nn.Parameter(torch.ones(96, requires_grad=True))
         self.irb_bottleneck4 = self.irb_bottleneck(
             48, 96, 4, 2, expansion, self.out_channel_mask_4
         )
 
-        self.repeat_mask_5 = nn.Parameter(torch.ones(4, requires_grad=True))
+        self.repeat_mask_5 = 10 * nn.Parameter(torch.ones(4, requires_grad=True))
         self.out_channel_mask_5 = nn.Parameter(torch.ones(128, requires_grad=True))
         self.irb_bottleneck5 = self.irb_bottleneck(
             96, 128, 4, 2, expansion, self.out_channel_mask_5
         )
 
-        self.repeat_mask_6 = nn.Parameter(torch.ones(3, requires_grad=True))
+        self.repeat_mask_6 = 10 * nn.Parameter(torch.ones(3, requires_grad=True))
         self.out_channel_mask_6 = nn.Parameter(torch.ones(256, requires_grad=True))
         self.irb_bottleneck6 = self.irb_bottleneck(
             128, 256, 3, 2, expansion, self.out_channel_mask_6
         )
 
-        self.out_channel_mask_7 = nn.Parameter(torch.ones(320, requires_grad=True))
+        self.out_channel_mask_7 = 10 * nn.Parameter(torch.ones(320, requires_grad=True))
         self.irb_bottleneck7 = self.irb_bottleneck(
             256, 320, 1, 1, expansion, self.out_channel_mask_7
         )
@@ -353,7 +353,7 @@ class UNetMobileNetv3(nn.Module):
         self.D_irb5 = self.irb_bottleneck(
             32, 16, 1, 2, expansion, self.out_channel_mask_1, True
         )
-        self.out_channel = nn.Parameter(torch.ones(3), requires_grad=False)
+        self.out_channel = 10 * nn.Parameter(torch.ones(3), requires_grad=False)
         self.D_irb6 = self.irb_bottleneck(
             16, 3, 1, 2, expansion, self.out_channel, True
         )
@@ -464,9 +464,9 @@ class UNetMobileNetv3(nn.Module):
 
 
 
-target = torch.randn(1,3,512,512).cuda()
-input = torch.randn(1, 3, 512, 512).cuda()
-model = UNetMobileNetv3(512).cuda()
+target = torch.randn(1,3,512,512)
+input = torch.randn(1, 3, 512, 512)
+model = UNetMobileNetv3(512)
 out, latency_original = model(input)
 print(out.shape, latency_original.item())
 
@@ -511,4 +511,7 @@ print(macs)
 
 1863985408.0
 4287650514.0
+
+2174149888
+4287650514
 """
