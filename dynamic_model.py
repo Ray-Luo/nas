@@ -125,44 +125,38 @@ class InvertedResidualBase(nn.Module):
                     macs_per_output_element = (in_channels // groups) * kernel_h * kernel_w
                     num_output_elements = batch_size * out_channels * h_out * w_out
                     total_macs += macs_per_output_element * num_output_elements
-                    if operation.bias is not None:
+                    if operation.bias:
                         total_macs += out_channels * h_out * w_out
 
                 elif isinstance(operation, nn.BatchNorm2d):
                     _, _, h_out, w_out = output.size()
                     num_output_elements = batch_size * out_channels * h_out * w_out
-                    mac = 2 * num_output_elements
+                    mac = 4 * num_output_elements
                     total_macs += mac
 
                 else:
                     raise NotImplementedError(f"Operation {type(operation)} not implemented")
 
         elif isinstance(operations, h_swish):
-            _, _, h_out, w_out = output.size()
-            mac = h_out * w_out * out_channels
-            total_macs += mac * 2
+            total_macs += 0
 
         elif isinstance(operations, nn.ReLU):
-            _, _, h_out, w_out = output.size()
-            mac = h_out * w_out * out_channels
-            total_macs += mac
+            total_macs += 0
 
         elif isinstance(operations, SELayer):
-            _, _, h_out, w_out = output.size()
+            _, _, h_in, w_in = input.size()
 
-            avg_pool_mac = out_channels * h_out * w_out
-            fc_mac = 2 * out_channels * _make_divisible(out_channels // 4, 8)
-            elemwise_mul_macs = out_channels * h_out * w_out
-            relu_mac = h_out * w_out * _make_divisible(out_channels // 4, 8)
-            sigmoid_mac = h_out * w_out * out_channels
+            middle_channels = _make_divisible(in_channels // 4, 8)
+            linear1_macs = in_channels * middle_channels
+            linear2_macs = middle_channels * out_channels
 
-            macs = avg_pool_mac + fc_mac + elemwise_mul_macs + relu_mac + sigmoid_mac
-            total_macs += macs
+            num_elements = 1 * in_channels * h_in * w_in
+            total_macs += linear1_macs + linear2_macs + num_elements
 
         else:
-            raise NotImplementedError(f"Operation {type(operation)} not implemented")
+            raise NotImplementedError(f"Operation {type(operations)} not implemented")
 
-        return torch.tensor([total_macs], device=output.device, requires_grad=True)
+        return torch.tensor([total_macs], dtype=torch.float, device=output.device, requires_grad=True)
 
     def forward(self, x):
         act_mask = torch.sigmoid(self.act_mask)
@@ -478,7 +472,7 @@ print(out.shape, latency_original.item())
 
 from thop import profile
 macs, params = profile(model, inputs=(input, ))
-print(macs, params)
+print(macs)
 # import torch.optim as optim
 
 # optimizer = optim.SGD(model.parameters(), lr=1e-3)
@@ -508,7 +502,13 @@ print(macs, params)
 
 # print(torch.sum(model.irb_bottleneck2[0].expansion_mask).item())
 
+"""
+1869096064.0 1863985408.0
+4287650514.0
 
+786600.0
+786483.0
 
-1869096064.0
-  13255976.0
+1863985408.0
+4287650514.0
+"""
