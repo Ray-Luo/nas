@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+# def nn.functional.relu(x):
+#     return torch.min(torch.max(x, torch.tensor(0.0, requires_grad=True)), torch.tensor(1.0, requires_grad=True))
 
 def _make_divisible(v, divisor, min_value=None):
     # ensure that all layers have a channel number that is divisible by 8
@@ -159,10 +161,10 @@ class InvertedResidualBase(nn.Module):
         return torch.tensor([total_macs], dtype=torch.float, device=output.device, requires_grad=True)
 
     def forward(self, x):
-        act_mask = torch.sigmoid(self.act_mask)
-        se_mask = torch.sigmoid(self.se_mask)
-        out_channel_mask = torch.sigmoid(self.out_channel_mask)
-        expansion_mask = torch.sigmoid(self.expansion_mask)
+        act_mask = nn.functional.relu(self.act_mask)
+        se_mask = nn.functional.relu(self.se_mask)
+        out_channel_mask = nn.functional.relu(self.out_channel_mask)
+        expansion_mask = nn.functional.relu(self.expansion_mask)
         expansion_sum = torch.sum(expansion_mask)
         out_channel_sum = torch.sum(out_channel_mask)
         expansion_mask = expansion_mask.view(1, -1, 1, 1)
@@ -296,43 +298,43 @@ class UNetMobileNetv3(nn.Module):
         expansion = 6
 
         # encoding arm
-        self.repeat_mask_1 = 10 * nn.Parameter(torch.ones(2, requires_grad=True))
+        self.repeat_mask_1 = nn.Parameter(torch.ones(2, requires_grad=True))
         self.out_channel_mask_1 = nn.Parameter(torch.ones(16, requires_grad=True))
         self.irb_bottleneck1 = self.irb_bottleneck(
             3, 16, 2, 2, expansion, out_channel_mask=self.out_channel_mask_1
         )
 
-        self.repeat_mask_2 = 10 * nn.Parameter(torch.ones(2, requires_grad=True))
+        self.repeat_mask_2 = nn.Parameter(torch.ones(2, requires_grad=True))
         self.out_channel_mask_2 = nn.Parameter(torch.ones(32, requires_grad=True))
         self.irb_bottleneck2 = self.irb_bottleneck(
             16, 32, 2, 2, expansion, self.out_channel_mask_2
         )
 
-        self.repeat_mask_3 = 10 * nn.Parameter(torch.ones(3, requires_grad=True))
+        self.repeat_mask_3 = nn.Parameter(torch.ones(3, requires_grad=True))
         self.out_channel_mask_3 = nn.Parameter(torch.ones(48, requires_grad=True))
         self.irb_bottleneck3 = self.irb_bottleneck(
             32, 48, 3, 2, expansion, self.out_channel_mask_3
         )
 
-        self.repeat_mask_4 = 10 * nn.Parameter(torch.ones(4, requires_grad=True))
+        self.repeat_mask_4 = nn.Parameter(torch.ones(4, requires_grad=True))
         self.out_channel_mask_4 = nn.Parameter(torch.ones(96, requires_grad=True))
         self.irb_bottleneck4 = self.irb_bottleneck(
             48, 96, 4, 2, expansion, self.out_channel_mask_4
         )
 
-        self.repeat_mask_5 = 10 * nn.Parameter(torch.ones(4, requires_grad=True))
+        self.repeat_mask_5 = nn.Parameter(torch.ones(4, requires_grad=True))
         self.out_channel_mask_5 = nn.Parameter(torch.ones(128, requires_grad=True))
         self.irb_bottleneck5 = self.irb_bottleneck(
             96, 128, 4, 2, expansion, self.out_channel_mask_5
         )
 
-        self.repeat_mask_6 = 10 * nn.Parameter(torch.ones(3, requires_grad=True))
+        self.repeat_mask_6 = nn.Parameter(torch.ones(3, requires_grad=True))
         self.out_channel_mask_6 = nn.Parameter(torch.ones(256, requires_grad=True))
         self.irb_bottleneck6 = self.irb_bottleneck(
             128, 256, 3, 2, expansion, self.out_channel_mask_6
         )
 
-        self.out_channel_mask_7 = 10 * nn.Parameter(torch.ones(320, requires_grad=True))
+        self.out_channel_mask_7 = nn.Parameter(torch.ones(320, requires_grad=True))
         self.irb_bottleneck7 = self.irb_bottleneck(
             256, 320, 1, 1, expansion, self.out_channel_mask_7
         )
@@ -353,7 +355,7 @@ class UNetMobileNetv3(nn.Module):
         self.D_irb5 = self.irb_bottleneck(
             32, 16, 1, 2, expansion, self.out_channel_mask_1, True
         )
-        self.out_channel = 10 * nn.Parameter(torch.ones(3), requires_grad=False)
+        self.out_channel = nn.Parameter(torch.ones(3), requires_grad=False)
         self.D_irb6 = self.irb_bottleneck(
             16, 3, 1, 2, expansion, self.out_channel, True
         )
@@ -404,7 +406,7 @@ class UNetMobileNetv3(nn.Module):
                 total_macs += cur_macs
 
         else:
-            block_mask = torch.sigmoid(block_mask)
+            block_mask = nn.functional.relu(block_mask)
             for i in range(len(blocks)):
                 block = blocks[i]
                 x, cur_macs = block(x)
@@ -462,46 +464,46 @@ class UNetMobileNetv3(nn.Module):
             + macs14
         )
 
+if 1:
 
+    target = torch.randn(1,3,512,512).cuda()
+    input = torch.randn(1, 3, 512, 512).cuda()
+    model = UNetMobileNetv3(512).cuda()
+    # out, latency_original = model(input)
+    # print(out.shape, latency_original.item())
 
-target = torch.randn(1,3,512,512)
-input = torch.randn(1, 3, 512, 512)
-model = UNetMobileNetv3(512)
-out, latency_original = model(input)
-print(out.shape, latency_original.item())
+    # from thop import profile
+    # macs, params = profile(model, inputs=(input, ))
+    # print(macs)
+    import torch.optim as optim
 
-from thop import profile
-macs, params = profile(model, inputs=(input, ))
-print(macs)
-# import torch.optim as optim
+    optimizer = optim.SGD(model.parameters(), lr=1e-3)
+    criterion = nn.L1Loss()
+    num_epochs = 100
+    weight = 1e-10
 
-# optimizer = optim.SGD(model.parameters(), lr=1e-3)
-# criterion = nn.L1Loss()
-# num_epochs = 1000
-# weight = 1e-7
+    with torch.no_grad():
+        _, initial_latency = model(input)
+        target_latency = 0.023 * initial_latency.item()
 
-# with torch.no_grad():
-#     _, initial_latency = model(input)
-#     target_latency = 0.5 * initial_latency.item()
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
 
-# for epoch in range(num_epochs):
-#     optimizer.zero_grad()
+        out, latency = model(input)
+        # loss = criterion(out, target)
+        latency_constraint = torch.relu(latency - target_latency)
+        # if latency > latency_original * 0.1:
+        loss = latency_constraint * weight
+            # print(latency_original.item(), latency.item(), loss.item())
 
-#     out, latency = model(input)
-#     loss = criterion(out, target)
-#     latency_constraint = torch.relu(latency - target_latency)
-#     # if latency > latency_original * 0.1:
-#     loss += latency_constraint * weight
-#         # print(latency_original.item(), latency.item(), loss.item())
+        print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), initial_latency.item()))
+        loss.backward()
+    #     # print(torch.sum(model.repeat_mask_5).item())
+    #     # print("******", model.irb_bottleneck2[0].expansion_mask.grad)
+        optimizer.step()
 
-#     print("Epoch: {}, Loss: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency.item(), initial_latency.item()))
-#     loss.backward()
-#     # print(torch.sum(model.repeat_mask_5).item())
-#     # print("******", model.irb_bottleneck2[0].expansion_mask.grad)
-#     optimizer.step()
-
-# print(torch.sum(model.irb_bottleneck2[0].expansion_mask).item())
-
+    # print(torch.sum(model.irb_bottleneck2[0].expansion_mask).item())
+    torch.save(model.state_dict(), './my_model.pth')
 """
 1869096064.0 1863985408.0
 4287650514.0
@@ -512,6 +514,6 @@ print(macs)
 1863985408.0
 4287650514.0
 
-2174149888
+4215128064.0.0
 4287650514
 """
