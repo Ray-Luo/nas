@@ -1,7 +1,7 @@
 
 import torch.nn as nn
 import torch
-from dynamic_model import UNetMobileNetv3
+from baseline_model256 import UNetMobileNetv3
 
 
 
@@ -9,12 +9,6 @@ from dynamic_model import UNetMobileNetv3
 target = torch.randn(1,3,512,512)
 input = torch.randn(1, 3, 512, 512)
 model = UNetMobileNetv3(512)
-
-model = nn.Sequential(
-    nn.Conv2d(3, 3, 1, 1, 0, bias=False),
-    nn.BatchNorm2d(3),
-)
-
 
 # model.load_state_dict(torch.load('./my_model.pth', map_location=torch.device('cpu')))
 model.eval()

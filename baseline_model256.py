@@ -132,7 +132,7 @@ class InvertedResidualBlock(nn.Module):
 
 
 class UpInvertedResidualBlock(nn.Module):
-    def __init__(self, inp, oup, stride=2, expansion=6, use_se=False, use_hs=False):
+    def __init__(self, inp, oup, stride=2, expansion=6, use_se=True, use_hs=True):
         super(UpInvertedResidualBlock, self).__init__()
         assert stride in [1, 2]
 
@@ -201,23 +201,22 @@ class UNetMobileNetv3(nn.Module):
         super(UNetMobileNetv3, self).__init__()
         self.out_size = out_size
 
-        expansion = 3
+        expansion = 1
 
         # encoding arm
-        self.irb_bottleneck1 = self.irb_bottleneck(3, 16, 2, 2, 1)
-        self.irb_bottleneck2 = self.irb_bottleneck(16, 32, 2, 2, expansion)
-        self.irb_bottleneck3 = self.irb_bottleneck(32, 48, 3, 2, expansion)
-        self.irb_bottleneck4 = self.irb_bottleneck(48, 96, 3, 2, expansion)
-        self.irb_bottleneck5 = self.irb_bottleneck(96, 128, 3, 2, expansion)
-        self.irb_bottleneck6 = self.irb_bottleneck(128, 256, 2, 2, expansion)
+        self.irb_bottleneck1 = self.irb_bottleneck(3, 16, 1, 2, 1)
+        self.irb_bottleneck2 = self.irb_bottleneck(16, 32, 1, 2, expansion)
+        self.irb_bottleneck3 = self.irb_bottleneck(32, 48, 1, 2, expansion)
+        self.irb_bottleneck4 = self.irb_bottleneck(48, 96, 1, 2, expansion)
+        self.irb_bottleneck5 = self.irb_bottleneck(96, 128, 1, 2, expansion)
+        self.irb_bottleneck6 = self.irb_bottleneck(128, 256, 1, 2, expansion)
         self.irb_bottleneck7 = self.irb_bottleneck(256, 320, 1, 1, expansion)
         # decoding arm
         self.D_irb1 = self.irb_bottleneck(320, 128, 1, 2, expansion, True)
         self.D_irb2 = self.irb_bottleneck(128, 96, 1, 2, expansion, True)
         self.D_irb3 = self.irb_bottleneck(96, 48, 1, 2, expansion, True)
         self.D_irb4 = self.irb_bottleneck(48, 32, 1, 2, expansion, True)
-        self.D_irb5 = self.irb_bottleneck(32, 16, 1, 2, expansion, True)
-        self.D_irb6 = self.irb_bottleneck(16, 3, 1, 2, expansion, True)
+        self.D_irb5 = self.irb_bottleneck(32, 3, 1, 2, expansion, True)
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
         """
@@ -270,15 +269,15 @@ class UNetMobileNetv3(nn.Module):
         d2 = self.D_irb2(d1) + x5
         d3 = self.D_irb3(d2) + x4
         d4 = self.D_irb4(d3) + x3
-        d5 = self.D_irb5(d4) + x2
-        d6 = self.D_irb6(d5)
-        return d6
+        d5 = self.D_irb5(d4)
+        # d6 = self.D_irb6(d5)
+        return d5
 
 
 # import torch
-# target = torch.randn(1,3,512,512)#.cuda()
-# input = torch.randn(1, 3, 512, 512)#.cuda()
-# model = UNetMobileNetv3(512)#.cuda()
+# target = torch.randn(1,3,256,256)#.cuda()
+# input = torch.randn(1, 3, 256, 256)#.cuda()
+# model = UNetMobileNetv3(256)#.cuda()
 
 # output = model(input)
 # print(output.size())
