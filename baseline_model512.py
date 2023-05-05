@@ -71,7 +71,7 @@ def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
 
 
 class InvertedResidualBlock(nn.Module):
-    def __init__(self, inp, oup, stride, expansion, use_se=True, use_hs=True):
+    def __init__(self, inp, oup, stride, expansion, use_se=False, use_hs=False):
         super(InvertedResidualBlock, self).__init__()
         assert stride in [1, 2]
 
@@ -201,15 +201,15 @@ class UNetMobileNetv3(nn.Module):
         super(UNetMobileNetv3, self).__init__()
         self.out_size = out_size
 
-        expansion = 3
+        expansion = 1
 
         # encoding arm
-        self.irb_bottleneck1 = self.irb_bottleneck(3, 16, 2, 2, 1)
-        self.irb_bottleneck2 = self.irb_bottleneck(16, 32, 2, 2, expansion)
-        self.irb_bottleneck3 = self.irb_bottleneck(32, 48, 3, 2, expansion)
-        self.irb_bottleneck4 = self.irb_bottleneck(48, 96, 3, 2, expansion)
-        self.irb_bottleneck5 = self.irb_bottleneck(96, 128, 3, 2, expansion)
-        self.irb_bottleneck6 = self.irb_bottleneck(128, 256, 2, 2, expansion)
+        self.irb_bottleneck1 = self.irb_bottleneck(3, 16, 1, 2, 1)
+        self.irb_bottleneck2 = self.irb_bottleneck(16, 32, 1, 2, expansion)
+        self.irb_bottleneck3 = self.irb_bottleneck(32, 48, 1, 2, expansion)
+        self.irb_bottleneck4 = self.irb_bottleneck(48, 96, 1, 2, expansion)
+        self.irb_bottleneck5 = self.irb_bottleneck(96, 128, 1, 2, expansion)
+        self.irb_bottleneck6 = self.irb_bottleneck(128, 256, 1, 2, expansion)
         self.irb_bottleneck7 = self.irb_bottleneck(256, 320, 1, 1, expansion)
         # decoding arm
         self.D_irb1 = self.irb_bottleneck(320, 128, 1, 2, expansion, True)
@@ -275,17 +275,17 @@ class UNetMobileNetv3(nn.Module):
         return d6
 
 
-# import torch
-# target = torch.randn(1,3,512,512)#.cuda()
-# input = torch.randn(1, 3, 512, 512)#.cuda()
-# model = UNetMobileNetv3(512)#.cuda()
+import torch
+target = torch.randn(1,3,512,512)#.cuda()
+input = torch.randn(1, 3, 512, 512)#.cuda()
+model = UNetMobileNetv3(512)#.cuda()
 
-# output = model(input)
-# print(output.size())
+output = model(input)
+print(output.size())
 
-# num_params = sum(p.numel() for p in model.parameters())
-# print("Number of parameters: ", num_params)
+num_params = sum(p.numel() for p in model.parameters())
+print("Number of parameters: ", num_params)
 
-# from thop import profile
-# macs, params = profile(model, inputs=(input, ))
-# print(macs)
+from thop import profile
+macs, params = profile(model, inputs=(input, ))
+print(macs)

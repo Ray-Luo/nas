@@ -505,16 +505,6 @@ if 1:
     # print(torch.sum(model.irb_bottleneck2[0].expansion_mask).item())
     torch.save(model.state_dict(), './my_model.pth')
 """
-1869096064.0 1863985408.0
-4287650514.0
-
-786600.0
-786483.0
-
-1863985408.0
-4287650514.0
-
-6428819456.0
-4215128064.0.0
-4287650514
+baseline_512 --> 327401472.0 --> 70 ms
+baseline_256 -->  49278976.0 --> 40 ms
 """

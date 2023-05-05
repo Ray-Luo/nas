@@ -71,7 +71,7 @@ def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
 
 
 class InvertedResidualBlock(nn.Module):
-    def __init__(self, inp, oup, stride, expansion, use_se=True, use_hs=True):
+    def __init__(self, inp, oup, stride, expansion, use_se=False, use_hs=False):
         super(InvertedResidualBlock, self).__init__()
         assert stride in [1, 2]
 
@@ -132,7 +132,7 @@ class InvertedResidualBlock(nn.Module):
 
 
 class UpInvertedResidualBlock(nn.Module):
-    def __init__(self, inp, oup, stride=2, expansion=6, use_se=True, use_hs=True):
+    def __init__(self, inp, oup, stride=2, expansion=6, use_se=False, use_hs=False):
         super(UpInvertedResidualBlock, self).__init__()
         assert stride in [1, 2]
 
@@ -274,17 +274,17 @@ class UNetMobileNetv3(nn.Module):
         return d5
 
 
-# import torch
-# target = torch.randn(1,3,256,256)#.cuda()
-# input = torch.randn(1, 3, 256, 256)#.cuda()
-# model = UNetMobileNetv3(256)#.cuda()
+import torch
+target = torch.randn(1,3,256,256)#.cuda()
+input = torch.randn(1, 3, 256, 256)#.cuda()
+model = UNetMobileNetv3(256)#.cuda()
 
-# output = model(input)
-# print(output.size())
+output = model(input)
+print(output.size())
 
-# num_params = sum(p.numel() for p in model.parameters())
-# print("Number of parameters: ", num_params)
+num_params = sum(p.numel() for p in model.parameters())
+print("Number of parameters: ", num_params)
 
-# from thop import profile
-# macs, params = profile(model, inputs=(input, ))
-# print(macs)
+from thop import profile
+macs, params = profile(model, inputs=(input, ))
+print(macs)
