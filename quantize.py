@@ -49,11 +49,21 @@ class FusedUNetMobileNetv3(UNetMobileNetv3):
 
 
 
-
-
 original_model = UNetMobileNetv3(512)
-pretrained_checkpoint_path = "path/to/your/checkpoint.pth"
-original_model.load_state_dict(torch.load(pretrained_checkpoint_path))
+pretrained_checkpoint_path = "./last.ckpt"
+checkpoint = torch.load(
+    pretrained_checkpoint_path,
+    map_location=lambda storage, loc: storage,
+)["state_dict"]
+filtered_checkpoint = {}
+for key, value in checkpoint.items():
+    target = "net_student."
+    if target in key:
+        filtered_checkpoint[key.replace(target, "")] = value
+
+model_dict = original_model.state_dict()
+model_dict.update(filtered_checkpoint)
+original_model.load_state_dict(filtered_checkpoint)
 
 fused_model = FusedUNetMobileNetv3(512)
 fused_model.load_state_dict(original_model.state_dict())
@@ -79,3 +89,9 @@ Use representative (validation) data instead.
 #   for _ in range(10):
 #     x = torch.rand(1,2, 28, 28)
 #     m(x)
+
+"""Convert"""
+torch.quantization.convert(fused_model, inplace=True)
+
+"""Check"""
+print(fused_model[[1]].weight().element_size())
