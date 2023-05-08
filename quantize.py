@@ -1,112 +1,81 @@
 import os
 import torch
-from dynamic_model import UNetMobileNetv3
+from unet_mobilenetv3_small import UNetMobileNetv3
+import torch.nn as nn
+import torch.quantization
 
-generator = UNetMobileNetv3(512)
-generator.load_state_dict(torch.load('./my_model.pth'))
-generator.eval()
+class FusedConvBNReLU(nn.Module):
+    def __init__(self, conv, bn):
+        super(FusedConvBNReLU, self).__init__()
+        self.fused_conv = torch.nn.utils.fuse_conv_bn_relu(conv, bn)
 
-with torch.no_grad():
-    print("repeat_mask_1: ", torch.sum(torch.relu(generator.repeat_mask_1)).item())
-    print("out_channel_mask_1: ", torch.sum(torch.relu(generator.out_channel_mask_1)).item())
-    for i in range(len(generator.db1)):
-        cur = generator.db1[i]
-        print("irb_bottleneck1 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("irb_bottleneck1 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("irb_bottleneck1 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+    def forward(self, x):
+        x = self.fused_conv(x)
+        return x
 
-    print("repeat_mask_2: ", torch.sum(torch.relu(generator.repeat_mask_2)).item())
-    print("out_channel_mask_2: ", torch.sum(torch.relu(generator.out_channel_mask_2)).item())
-    for i in range(len(generator.db2)):
-        cur = generator.db2[i]
-        print("irb_bottleneck2 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("irb_bottleneck2 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("irb_bottleneck2 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+def fuse_module(module):
+    if isinstance(module, (nn.Conv2d, nn.BatchNorm2d, nn.ReLU, nn.ReLU6)):
+        return False
+    return True
 
-    print("repeat_mask_3: ", torch.sum(torch.relu(generator.repeat_mask_3)).item())
-    print("out_channel_mask_3: ", torch.sum(torch.relu(generator.out_channel_mask_3)).item())
-    for i in range(len(generator.db3)):
-        cur = generator.db3[i]
-        print("irb_bottleneck3 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("irb_bottleneck3 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("irb_bottleneck3 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+class FusedUNetMobileNetv3(UNetMobileNetv3):
+    def __init__(self, out_size):
+        super(FusedUNetMobileNetv3, self).__init__(out_size)
+        for name, m in self.named_modules():
+            if isinstance(m, nn.Sequential):
+                layers = []
+                prev_conv = None
+                prev_bn = None
+                for layer in m:
+                    if isinstance(layer, nn.Conv2d):
+                        prev_conv = layer
+                    elif isinstance(layer, nn.BatchNorm2d) and prev_conv is not None:
+                        prev_bn = layer
+                    elif isinstance(layer, (nn.ReLU, nn.ReLU6)) and prev_conv is not None and prev_bn is not None:
+                        layers.append(FusedConvBNReLU(prev_conv, prev_bn))
+                        layers.append(layer)
+                        prev_conv = None
+                        prev_bn = None
+                    elif fuse_module(layer):
+                        layers.append(layer)
+                if prev_conv is not None and prev_bn is not None:
+                    layers.append(FusedConvBNReLU(prev_conv, prev_bn))
+                else:
+                    if prev_conv is not None:
+                        layers.append(prev_conv)
+                    if prev_bn is not None:
+                        layers.append(prev_bn)
+                setattr(self, name, nn.Sequential(*layers))
 
-    print("repeat_mask_4: ", torch.sum(torch.relu(generator.repeat_mask_4)).item())
-    print("out_channel_mask_4: ", torch.sum(torch.relu(generator.out_channel_mask_4)).item())
-    for i in range(len(generator.db4)):
-        cur = generator.db4[i]
-        print("irb_bottleneck4 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("irb_bottleneck4 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("irb_bottleneck4 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
 
-    print("repeat_mask_5: ", torch.sum(torch.relu(generator.repeat_mask_5)).item())
-    print("out_channel_mask_5: ", torch.sum(torch.relu(generator.out_channel_mask_5)).item())
-    for i in range(len(generator.db5)):
-        cur = generator.db5[i]
-        print("irb_bottleneck5 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("irb_bottleneck5 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("irb_bottleneck5 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
 
-    print("repeat_mask_6: ", torch.sum(torch.relu(generator.repeat_mask_6)).item())
-    print("out_channel_mask_6: ", torch.sum(torch.relu(generator.out_channel_mask_6)).item())
-    for i in range(len(generator.db6)):
-        cur = generator.db6[i]
-        print("irb_bottleneck6 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("irb_bottleneck6 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("irb_bottleneck6 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
 
-    print("out_channel_mask_7: ", torch.sum(torch.relu(generator.out_channel_mask_7)).item())
-    for i in range(len(generator.db7)):
-        cur = generator.db7[i]
-        print("irb_bottleneck7 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("irb_bottleneck7 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("irb_bottleneck7 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
 
-    for i in range(len(generator.ub1)):
-        cur = generator.ub1[i]
-        print("D_irb1 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("D_irb1 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("D_irb1 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+original_model = UNetMobileNetv3(512)
+pretrained_checkpoint_path = "path/to/your/checkpoint.pth"
+original_model.load_state_dict(torch.load(pretrained_checkpoint_path))
 
-    for i in range(len(generator.ub2)):
-        cur = generator.ub2[i]
-        print("D_irb2 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("D_irb2 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("D_irb2 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+fused_model = FusedUNetMobileNetv3(512)
+fused_model.load_state_dict(original_model.state_dict())
+fused_model.eval()
 
-    for i in range(len(generator.ub3)):
-        cur = generator.ub3[i]
-        print("D_irb3 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("D_irb3 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("D_irb3 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+backend = "fbgemm"  # running on a x86 CPU. Use "qnnpack" if running on ARM.
 
-    for i in range(len(generator.ub4)):
-        cur = generator.ub4[i]
-        print("D_irb4 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("D_irb4 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("D_irb4 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+"""Insert stubs"""
+fused_model = nn.Sequential(torch.quantization.QuantStub(),
+    *fused_model,
+    torch.quantization.DeQuantStub())
 
-    for i in range(len(generator.ub5)):
-        cur = generator.ub5[i]
-        print("D_irb5 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("D_irb5 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("D_irb5 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+"""Prepare"""
+fused_model.qconfig = torch.quantization.get_default_qconfig(backend)
+torch.quantization.prepare(fused_model, inplace=True)
 
-    for i in range(len(generator.ub6)):
-        cur = generator.ub6[i]
-        print("D_irb6 {} expansion_mask: ".format(i), torch.sum(torch.relu(cur.expansion_mask)).item())
-        print("D_irb6 {} act_mask: ".format(i), torch.relu(cur.act_mask).item())
-        print("D_irb6 {} se_mask: ".format(i), torch.relu(cur.se_mask).item())
-    print("\n")
+
+"""Calibrate
+- This example uses random data for convenience.
+Use representative (validation) data instead.
+"""
+# with torch.inference_mode():
+#   for _ in range(10):
+#     x = torch.rand(1,2, 28, 28)
+#     m(x)
