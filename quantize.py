@@ -4,10 +4,38 @@ from unet_mobilenetv3_small import UNetMobileNetv3
 import torch.nn as nn
 import torch.quantization
 
+def fuse_conv_bn_relu(conv, bn, relu):
+    # Extract Conv2d and BatchNorm2d parameters
+    w = conv.weight
+    mean = bn.running_mean
+    var = bn.running_var
+    eps = bn.eps
+    gamma = bn.weight
+    beta = bn.bias
+
+    # Fuse parameters
+    if conv.bias is None:
+        b = (beta - gamma * mean / (var + eps).sqrt()).detach()
+    else:
+        print(conv.bias.shape, mean.shape, gamma.shape, var.shape, eps, "*****")
+        b = (conv.bias - gamma * mean / (var + eps).sqrt()).detach()
+
+    w = (w * (gamma / (var + eps).sqrt()).view(-1, 1, 1, 1)).detach()
+
+    # Create a new fused Conv2d layer
+    fused_conv = nn.Conv2d(conv.in_channels, conv.out_channels, conv.kernel_size, conv.stride, conv.padding,
+                           conv.dilation, conv.groups, bias=True)
+    fused_conv.weight = nn.Parameter(w)
+    fused_conv.bias = nn.Parameter(b)
+
+    # Return the fused layer
+    return nn.Sequential(fused_conv, nn.ReLU(inplace=True))
+
+
 class FusedConvBNReLU(nn.Module):
-    def __init__(self, conv, bn):
+    def __init__(self, conv, bn, relu):
         super(FusedConvBNReLU, self).__init__()
-        self.fused_conv = torch.nn.utils.fuse_conv_bn_relu(conv, bn)
+        self.fused_conv = fuse_conv_bn_relu(conv, bn, relu)
 
     def forward(self, x):
         x = self.fused_conv(x)
@@ -26,26 +54,32 @@ class FusedUNetMobileNetv3(UNetMobileNetv3):
                 layers = []
                 prev_conv = None
                 prev_bn = None
+                prev_relu = None
                 for layer in m:
                     if isinstance(layer, nn.Conv2d):
                         prev_conv = layer
                     elif isinstance(layer, nn.BatchNorm2d) and prev_conv is not None:
                         prev_bn = layer
                     elif isinstance(layer, (nn.ReLU, nn.ReLU6)) and prev_conv is not None and prev_bn is not None:
-                        layers.append(FusedConvBNReLU(prev_conv, prev_bn))
-                        layers.append(layer)
-                        prev_conv = None
-                        prev_bn = None
+                        prev_relu = layer
                     elif fuse_module(layer):
+                        if prev_conv is not None and prev_bn is not None and prev_relu is not None:
+                            layers.append(FusedConvBNReLU(prev_conv, prev_bn, prev_relu))
+                            prev_conv = None
+                            prev_bn = None
+                            prev_relu = None
                         layers.append(layer)
-                if prev_conv is not None and prev_bn is not None:
-                    layers.append(FusedConvBNReLU(prev_conv, prev_bn))
+                if prev_conv is not None and prev_bn is not None and prev_relu is not None:
+                    layers.append(FusedConvBNReLU(prev_conv, prev_bn, prev_relu))
                 else:
                     if prev_conv is not None:
                         layers.append(prev_conv)
                     if prev_bn is not None:
                         layers.append(prev_bn)
+                    if prev_relu is not None:
+                        layers.append(prev_relu)
                 setattr(self, name, nn.Sequential(*layers))
+
 
 
 
