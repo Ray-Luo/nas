@@ -4,6 +4,37 @@ from unet_mobilenetv3_small import InvertedResidualBlock, UNetMobileNetv3, UpInv
 import torch.nn as nn
 import torch.quantization
 
+def _compare_script_and_mobile(model: torch.nn.Module,
+                                input: torch.Tensor):
+    # Compares the numerical outputs for script and lite modules
+    qengine = "qnnpack"
+    with override_quantized_engine(qengine):
+        script_module = torch.jit.script(model)
+        script_module_result = script_module(input)
+
+        max_retry = 5
+        for retry in range(1, max_retry + 1):
+            # retries `max_retry` times; breaks iff succeeds else throws exception
+            try:
+                buffer = io.BytesIO(script_module._save_to_buffer_for_lite_interpreter())
+                buffer.seek(0)
+                mobile_module = _load_for_lite_interpreter(buffer)
+
+                mobile_module_result = mobile_module(input)
+
+                torch.testing.assert_close(script_module_result, mobile_module_result)
+                mobile_module_forward_result = mobile_module.forward(input)
+                torch.testing.assert_close(script_module_result, mobile_module_forward_result)
+
+                mobile_module_run_method_result = mobile_module.run_method("forward", input)
+                torch.testing.assert_close(script_module_result, mobile_module_run_method_result)
+            except AssertionError as e:
+                if retry == max_retry:
+                    raise e
+                else:
+                    continue
+            break
+
 def fuse_model(model):
     torch.quantization.fuse_modules(model.conv3x3, ['0', '1'], inplace=True)
 
@@ -37,26 +68,10 @@ original_model.load_state_dict(filtered_checkpoint)
 original_model = original_model.cpu()
 original_model.eval()
 
-fused_model = fuse_model(original_model)
-
-
-backend = "qnnpack"  # running on a x86 CPU. Use "qnnpack" if running on ARM.
-
-"""Insert stubs"""
-fused_model_modules = list(fused_model.children())
-fused_model_modules.insert(0, torch.quantization.QuantStub())
-fused_model_modules.append(torch.quantization.DeQuantStub())
-fused_model = nn.Sequential(*fused_model_modules)
-
-
 """Prepare"""
-from torch.quantization import default_qconfig
-
-# Set the qconfig to use per-tensor observers for weights
-fused_model.qconfig = default_qconfig
-
-# Prepare the model for quantization
-torch.quantization.prepare(fused_model, inplace=True)
+original_model.qconfig = torch.quantization.get_default_qconfig("qnnpack")
+fused_model = fuse_model(original_model)
+prepared_model = torch.quantization.prepare(fused_model)
 
 
 """Calibrate
@@ -69,7 +84,7 @@ Use representative (validation) data instead.
 #     m(x)
 
 """Convert"""
-quantized_model = torch.quantization.convert(fused_model, inplace=True)
+quantized_model = torch.quantization.convert(prepared_model)
 
 """Check"""
 for name, module in quantized_model.named_modules():
@@ -78,6 +93,8 @@ for name, module in quantized_model.named_modules():
 
 output_dir = "./"
 input = torch.rand(1, 3, 512, 512)
+quantized_input = torch.quantize_per_tensor(input, scale=quantized_model.quant.scale, zero_point=quantized_model.quant.zero_point, dtype=torch.quint8)
+
 
 out = quantized_model(input)
 print(out.shape)
@@ -87,5 +104,5 @@ m_script = torch.jit.load(os.path.join(output_dir, "face_res.pt"))
 ops = torch.jit.export_opnames(m_script)
 print(ops)
 m_script._save_for_lite_interpreter(
-    os.path.join(output_dir, "face_res_mobileunetv2_lite.pt")
+    os.path.join(output_dir, "latest.ptl")
 )

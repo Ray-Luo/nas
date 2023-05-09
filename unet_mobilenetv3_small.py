@@ -3,9 +3,7 @@
 
 # Author: Lei Luo (luoleyouluole@fb.com)
 
-import torch
 import torch.nn as nn
-from torch.ao.nn.quantized import FloatFunctional
 
 def _make_divisible(v, divisor, min_value=None):
     # ensure that all layers have a channel number that is divisible by 8
@@ -85,6 +83,8 @@ class InvertedResidualBlock(nn.Module):
 
         self.identity = stride == 1 and inp == oup
 
+        self.add = nn.quantized.FloatFunctional()
+
         if inp == hidden_dim:
             self.conv = nn.Sequential(
                 # dw
@@ -131,9 +131,8 @@ class InvertedResidualBlock(nn.Module):
             )
 
     def forward(self, x):
-        add = FloatFunctional()
         if self.identity:
-            return add.add(x, self.conv(x))
+            return self.add.add(x, self.conv(x))
         else:
             return self.conv(x)
 
@@ -147,6 +146,8 @@ class UpInvertedResidualBlock(nn.Module):
 
         self.identity = stride == 1 and inp == oup
 
+        self.add = nn.quantized.FloatFunctional()
+
         if inp == hidden_dim:
             self.conv = nn.Sequential(
                 # dw
@@ -193,9 +194,8 @@ class UpInvertedResidualBlock(nn.Module):
             )
 
     def forward(self, x):
-        add = FloatFunctional()
         if self.identity:
-            return add.add(x, self.conv(x))
+            return self.add.add(x, self.conv(x))
         else:
             return self.conv(x)
 
@@ -210,6 +210,8 @@ class UNetMobileNetv3(nn.Module):
         self.out_size = out_size
 
         expansion = 6
+
+        self.add = nn.quantized.FloatFunctional()
 
         # encoding arm
         self.conv3x3 = self.depthwise_conv(3, 16, p=1, s=2)
@@ -228,6 +230,10 @@ class UNetMobileNetv3(nn.Module):
         self.D_irb5 = self.irb_bottleneck(32, 24, 1, 2, expansion, True)
         self.D_irb6 = self.irb_bottleneck(24, 16, 1, 2, expansion, True)
         self.D_irb7 = self.irb_bottleneck(16, 3, 1, 1, expansion, False)
+
+        import torch
+        self.quant = torch.quantization.QuantStub()
+        self.dequant = torch.quantization.DeQuantStub()
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
         """
@@ -266,6 +272,7 @@ class UNetMobileNetv3(nn.Module):
         return conv
 
     def forward(self, x):
+        x = self.quant(x)
         x1 = self.conv3x3(x)
         x2 = self.irb_bottleneck1(x1)
         x3 = self.irb_bottleneck2(x2)
@@ -276,11 +283,12 @@ class UNetMobileNetv3(nn.Module):
         x8 = self.irb_bottleneck7(x7)
 
         # Right arm / Decoding arm with skip connections
-        d1 = self.D_irb1(x8) + x6
-        d2 = self.D_irb2(d1) + x5
-        d3 = self.D_irb3(d2) + x4
-        d4 = self.D_irb4(d3) + x3
-        d5 = self.D_irb5(d4) + x2
+        d1 = self.add.add(self.D_irb1(x8), x6)
+        d2 = self.add.add(self.D_irb2(d1), x5)
+        d3 = self.add.add(self.D_irb3(d2), x4)
+        d4 = self.add.add(self.D_irb4(d3), x3)
+        d5 = self.add.add(self.D_irb5(d4), x2)
         d6 = self.D_irb6(d5)
         d7 = self.D_irb7(d6)
-        return d7
+        # return d7
+        return self.dequant(d7)
