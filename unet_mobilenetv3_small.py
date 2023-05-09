@@ -3,8 +3,9 @@
 
 # Author: Lei Luo (luoleyouluole@fb.com)
 
+import torch
 import torch.nn as nn
-
+from torch.ao.nn.quantized import FloatFunctional
 
 def _make_divisible(v, divisor, min_value=None):
     # ensure that all layers have a channel number that is divisible by 8
@@ -130,8 +131,9 @@ class InvertedResidualBlock(nn.Module):
             )
 
     def forward(self, x):
+        add = FloatFunctional()
         if self.identity:
-            return x + self.conv(x)
+            return add.add(x, self.conv(x))
         else:
             return self.conv(x)
 
@@ -191,8 +193,9 @@ class UpInvertedResidualBlock(nn.Module):
             )
 
     def forward(self, x):
+        add = FloatFunctional()
         if self.identity:
-            return x + self.conv(x)
+            return add.add(x, self.conv(x))
         else:
             return self.conv(x)
 

@@ -4,6 +4,14 @@ from unet_mobilenetv3_small import UNetMobileNetv3
 import torch.nn as nn
 import torch.quantization
 
+def map_state_dict_keys(original_state_dict):
+    mapped_state_dict = {}
+    for key, value in original_state_dict.items():
+        new_key = key.replace("conv.", "fused_conv.")
+        new_key = new_key.replace("bn.", "fused_bn.")
+        mapped_state_dict[new_key] = value
+    return mapped_state_dict
+
 def fuse_conv_bn_relu(conv, bn, relu):
     # Extract Conv2d and BatchNorm2d parameters
     w = conv.weight
@@ -17,7 +25,6 @@ def fuse_conv_bn_relu(conv, bn, relu):
     if conv.bias is None:
         b = (beta - gamma * mean / (var + eps).sqrt()).detach()
     else:
-        print(conv.bias.shape, mean.shape, gamma.shape, var.shape, eps, "*****")
         b = (conv.bias - gamma * mean / (var + eps).sqrt()).detach()
 
     w = (w * (gamma / (var + eps).sqrt()).view(-1, 1, 1, 1)).detach()
@@ -49,13 +56,24 @@ def fuse_module(module):
 class FusedUNetMobileNetv3(UNetMobileNetv3):
     def __init__(self, out_size):
         super(FusedUNetMobileNetv3, self).__init__(out_size)
-        for name, m in self.named_modules():
+        for name, m in list(self.named_modules()):
+            prev_conv = None
+            prev_bn = None
+            prev_relu = None
             if isinstance(m, nn.Sequential):
                 layers = []
-                prev_conv = None
-                prev_bn = None
-                prev_relu = None
                 for layer in m:
+
+                    if prev_conv is not None and prev_bn is not None and prev_relu is not None:
+                        layers.append(FusedConvBNReLU(prev_conv, prev_bn, prev_relu))
+                    else:
+                        if prev_conv is not None:
+                            layers.append(prev_conv)
+                        if prev_bn is not None:
+                            layers.append(prev_bn)
+                        if prev_relu is not None:
+                            layers.append(prev_relu)
+
                     if isinstance(layer, nn.Conv2d):
                         prev_conv = layer
                     elif isinstance(layer, nn.BatchNorm2d) and prev_conv is not None:
@@ -69,21 +87,14 @@ class FusedUNetMobileNetv3(UNetMobileNetv3):
                             prev_bn = None
                             prev_relu = None
                         layers.append(layer)
-                if prev_conv is not None and prev_bn is not None and prev_relu is not None:
-                    layers.append(FusedConvBNReLU(prev_conv, prev_bn, prev_relu))
-                else:
-                    if prev_conv is not None:
-                        layers.append(prev_conv)
-                    if prev_bn is not None:
-                        layers.append(prev_bn)
-                    if prev_relu is not None:
-                        layers.append(prev_relu)
+
                 setattr(self, name, nn.Sequential(*layers))
 
 
 
 
 original_model = UNetMobileNetv3(512)
+print(original_model)
 pretrained_checkpoint_path = "./last.ckpt"
 checkpoint = torch.load(
     pretrained_checkpoint_path,
@@ -99,33 +110,49 @@ model_dict = original_model.state_dict()
 model_dict.update(filtered_checkpoint)
 original_model.load_state_dict(filtered_checkpoint)
 
+fuse_dict = map_state_dict_keys(original_model.state_dict())
+
 fused_model = FusedUNetMobileNetv3(512)
-fused_model.load_state_dict(original_model.state_dict())
-fused_model.eval()
 
-backend = "fbgemm"  # running on a x86 CPU. Use "qnnpack" if running on ARM.
+# with open('./fuse_model_output.txt', 'w') as f:
 
-"""Insert stubs"""
-fused_model = nn.Sequential(torch.quantization.QuantStub(),
-    *fused_model,
-    torch.quantization.DeQuantStub())
-
-"""Prepare"""
-fused_model.qconfig = torch.quantization.get_default_qconfig(backend)
-torch.quantization.prepare(fused_model, inplace=True)
+#     # Redirect standard output to the file
+#     # Run your program
+#     for key in fused_model.state_dict():
+#         f.write(key)
+#         f.write("\n")
 
 
-"""Calibrate
-- This example uses random data for convenience.
-Use representative (validation) data instead.
-"""
-# with torch.inference_mode():
-#   for _ in range(10):
-#     x = torch.rand(1,2, 28, 28)
-#     m(x)
 
-"""Convert"""
-torch.quantization.convert(fused_model, inplace=True)
 
-"""Check"""
-print(fused_model[[1]].weight().element_size())
+
+
+# fused_model.load_state_dict(fuse_dict)
+# fused_model.eval()
+
+# backend = "fbgemm"  # running on a x86 CPU. Use "qnnpack" if running on ARM.
+
+# """Insert stubs"""
+# fused_model = nn.Sequential(torch.quantization.QuantStub(),
+#     *fused_model,
+#     torch.quantization.DeQuantStub())
+
+# """Prepare"""
+# fused_model.qconfig = torch.quantization.get_default_qconfig(backend)
+# torch.quantization.prepare(fused_model, inplace=True)
+
+
+# """Calibrate
+# - This example uses random data for convenience.
+# Use representative (validation) data instead.
+# """
+# # with torch.inference_mode():
+# #   for _ in range(10):
+# #     x = torch.rand(1,2, 28, 28)
+# #     m(x)
+
+# """Convert"""
+# torch.quantization.convert(fused_model, inplace=True)
+
+# """Check"""
+# print(fused_model[[1]].weight().element_size())
