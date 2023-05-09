@@ -1,7 +1,7 @@
 
 import torch.nn as nn
 import torch
-from dynamic_model_res import UNetMobileNetv3
+from dynamic_model_res2 import UNetMobileNetv3
 
 
 
