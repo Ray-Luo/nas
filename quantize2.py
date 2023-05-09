@@ -3,8 +3,47 @@ import torch
 from unet_mobilenetv3_small import InvertedResidualBlock, UNetMobileNetv3, UpInvertedResidualBlock
 import torch.nn as nn
 import torch.quantization
+import io
+from torch.jit.mobile import _load_for_lite_interpreter
+from contextlib import contextmanager
+import cv2
+from torchvision.transforms.functional import normalize
 
-def _compare_script_and_mobile(model: torch.nn.Module,
+def tensor2img(tensor, rgb2bgr=True, min_max=(0, 1)):
+    output = tensor.squeeze(0).detach().clamp_(*min_max).permute(1, 2, 0)
+    output = (output - min_max[0]) / (min_max[1] - min_max[0]) * 255
+    output = output.type(torch.uint8).cpu().numpy()
+    if rgb2bgr:
+        output = cv2.cvtColor(output, cv2.COLOR_RGB2BGR)
+    return output
+
+
+def img2tensor(imgs, bgr2rgb=True, float32=True):
+    def _totensor(img, bgr2rgb, float32):
+        if img.shape[2] == 3 and bgr2rgb:
+            if img.dtype == "float64":
+                img = img.astype("float32")
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = torch.from_numpy(img.transpose(2, 0, 1))
+        if float32:
+            img = img.float()
+        return img
+
+    if isinstance(imgs, list):
+        return [_totensor(img, bgr2rgb, float32) for img in imgs]
+    else:
+        return _totensor(imgs, bgr2rgb, float32)
+
+@contextmanager
+def override_quantized_engine(qengine):
+    previous = torch.backends.quantized.engine
+    torch.backends.quantized.engine = qengine
+    try:
+        yield
+    finally:
+        torch.backends.quantized.engine = previous
+
+def compare_script_and_mobile(model: torch.nn.Module,
                                 input: torch.Tensor):
     # Compares the numerical outputs for script and lite modules
     qengine = "qnnpack"
@@ -87,17 +126,25 @@ Use representative (validation) data instead.
 quantized_model = torch.quantization.convert(prepared_model)
 
 """Check"""
-for name, module in quantized_model.named_modules():
-    if isinstance(module, nn.quantized.Conv2d) or isinstance(module, nn.quantized.Linear):
-        print(f"{name}: {module.weight().dtype}")
+# for name, module in quantized_model.named_modules():
+#     if isinstance(module, nn.quantized.Conv2d) or isinstance(module, nn.quantized.Linear):
+#         print(f"{name}: {module.weight().dtype}")
 
 output_dir = "./"
-input = torch.rand(1, 3, 512, 512)
-quantized_input = torch.quantize_per_tensor(input, scale=quantized_model.quant.scale, zero_point=quantized_model.quant.zero_point, dtype=torch.quint8)
+input = cv2.imread("/data/sandcastle/boxes/fbsource/fbcode/compphoto/media_quality/face_restoration/gfpgan/test/1.png", cv2.IMREAD_COLOR)
+cv2.resize(input, (512, 512))
+input = img2tensor(input / 255.0, bgr2rgb=True, float32=True)
+normalize(input, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
+input = input.unsqueeze(0)
+print(input.shape)
 
 
-out = quantized_model(input)
-print(out.shape)
+output = quantized_model(input)
+output = tensor2img(output.squeeze(0), rgb2bgr=True, min_max=(-1, 1)).astype("uint8")
+cv2.imwrite("./enhanced.png", output)
+
+# compare_script_and_mobile(model=quantized_model, input=input)
+
 mapping_net_trace = torch.jit.trace(quantized_model, input)
 torch.jit.save(mapping_net_trace, os.path.join(output_dir, "face_res.pt"))
 m_script = torch.jit.load(os.path.join(output_dir, "face_res.pt"))
