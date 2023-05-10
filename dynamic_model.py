@@ -1,5 +1,39 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+from torch.autograd import Function
+
+class SoftmaxWithGradient(Function):
+    @staticmethod
+    def forward(ctx, input):
+        softmax_output = torch.softmax(input, dim=-1)
+        ctx.save_for_backward(softmax_output)
+        return softmax_output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        softmax_output, = ctx.saved_tensors
+        grad_input = softmax_output * (grad_output - (grad_output * softmax_output).sum(dim=-1, keepdim=True))
+        return grad_input
+
+def my_softmax(input):
+    return SoftmaxWithGradient.apply(input)
+
+def make_channel_mask(dim, requires_grad=True):
+    ones = torch.ones((dim, 1), requires_grad=requires_grad)
+    zeros = torch.zeros((dim, 1), requires_grad=requires_grad)
+    return nn.Parameter(
+        torch.cat((zeros, ones), dim=1), requires_grad=requires_grad
+    )
+
+def get_activation(logits):
+    softmax = nn.LogSoftmax(dim=1)
+    probs = softmax(logits)
+    # labels = torch.argmax(probs, dim=1)
+    return probs
+
+
 
 
 def _make_divisible(v, divisor, min_value=None):
@@ -15,7 +49,7 @@ def _make_divisible(v, divisor, min_value=None):
 
 
 class h_sigmoid(nn.Module):
-    def __init__(self, inplace=False):
+    def __init__(self, inplace=True):
         super(h_sigmoid, self).__init__()
         self.relu = nn.ReLU6(inplace=inplace)
 
@@ -24,7 +58,7 @@ class h_sigmoid(nn.Module):
 
 
 class h_swish(nn.Module):
-    def __init__(self, inplace=False):
+    def __init__(self, inplace=True):
         super(h_swish, self).__init__()
         self.sigmoid = h_sigmoid(inplace=inplace)
 
@@ -38,7 +72,7 @@ class SELayer(nn.Module):
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(channel, _make_divisible(channel // reduction, 8)),
-            nn.ReLU(inplace=False),
+            nn.ReLU(inplace=True),
             nn.Linear(_make_divisible(channel // reduction, 8), channel),
             h_sigmoid(),
         )
@@ -66,7 +100,7 @@ def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
     return nn.Sequential(
         nn.Conv2d(in_c, in_c, kernel_size=k, padding=p, groups=in_c, stride=s),
         nn.BatchNorm2d(num_features=in_c),
-        nn.ReLU6(inplace=False),
+        nn.ReLU6(inplace=True),
         nn.Conv2d(in_c, out_c, kernel_size=1),
     )
 
@@ -89,17 +123,9 @@ class InvertedResidualBase(nn.Module):
         self.identity = stride == 1 and inp == oup
 
         self.out_channel_mask = out_channel_mask
-        self.expansion_mask = nn.Parameter(
-            torch.ones(hidden_dim, requires_grad=True), requires_grad=True
-        )
+        self.expansion_mask = make_channel_mask(hidden_dim)
 
-        self.act_mask = nn.Parameter(torch.ones(1, requires_grad=True))
-        self.hs = h_swish()
-        self.relu = nn.ReLU(inplace=False)
-
-        self.se_mask = nn.Parameter(torch.ones(1, requires_grad=True))
-        self.se = SELayer(hidden_dim)
-        self.id = nn.Identity()
+        self.relu = nn.ReLU(inplace=True)
 
         self.pw = nn.Sequential(
             nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
@@ -167,10 +193,10 @@ class InvertedResidualBase(nn.Module):
         )
 
     def forward(self, x):
-        act_mask = nn.functional.relu(self.act_mask)
-        se_mask = nn.functional.relu(self.se_mask)
-        out_channel_mask = nn.functional.relu(self.out_channel_mask)
-        expansion_mask = nn.functional.relu(self.expansion_mask)
+        print("*******", self.out_channel_mask)
+        out_channel_mask = get_activation(self.out_channel_mask)
+        print("*******", out_channel_mask)
+        expansion_mask = get_activation(self.expansion_mask)
         expansion_sum = torch.sum(expansion_mask)
         out_channel_sum = torch.sum(out_channel_mask)
         expansion_mask = expansion_mask.view(1, -1, 1, 1)
@@ -184,46 +210,16 @@ class InvertedResidualBase(nn.Module):
         if not if_pw:
             pw_out = self.pw(x)
             pw_macs = self.get_mac(in_channels, expansion_sum, self.pw, x, pw_out)  # pw
-
-            hs_out = self.hs(pw_out)
-            hs_macs = self.get_mac(
-                expansion_sum, expansion_sum, self.hs, pw_out, hs_out
-            )  # hs
-
-            relu_out = self.relu(pw_out)
-            relu_macs = self.get_mac(
-                expansion_sum, expansion_sum, self.relu, pw_out, relu_out
-            )  # relu
-
-            out = act_mask * hs_out + (1 - act_mask) * relu_out
-            total_macs += pw_macs + act_mask * hs_macs + (1 - act_mask) * relu_macs
+            out = self.relu(pw_out)
+            total_macs += pw_macs
         else:
             out = x
 
         # depthwise conv
         dw_out = self.dw(out)
         dw_macs = self.get_mac(expansion_sum, expansion_sum, self.dw, out, dw_out)  # pw
-
-        hs_out = self.hs(dw_out)
-        hs_macs = self.get_mac(
-            expansion_sum, expansion_sum, self.hs, dw_out, hs_out
-        )  # hs
-
-        relu_out = self.relu(dw_out)
-        relu_macs = self.get_mac(
-            expansion_sum, expansion_sum, self.relu, dw_out, relu_out
-        )  # relu
-
-        out = act_mask * hs_out + (1 - act_mask) * relu_out
-        total_macs += dw_macs + act_mask * hs_macs + (1 - act_mask) * relu_macs
-
-        se_out = self.se(out)
-        se_macs = self.get_mac(
-            expansion_sum, expansion_sum, self.se, out, se_out
-        )  # relu
-        id_macs = 0
-        out = se_out * se_mask + (1 - se_mask) * self.id(out)
-        total_macs += se_mask * se_macs + (1 - se_mask) * id_macs
+        out = self.relu(dw_out)
+        total_macs += dw_macs
 
         # mimic skipping expansion layer
         out = out * expansion_mask
@@ -315,29 +311,37 @@ class UNetMobileNetv3(nn.Module):
 
         expansion = 6
 
-        repeat_masks = [0, 1, 1, 2, 3, 3, 2]
-
         # encoding arm
+        repeat_masks = [1, 1, 1, 3, 3, 3, 2]
+
+        self.repeat_mask_0 = nn.Parameter(
+            torch.ones(repeat_masks[0], requires_grad=True)
+        )
+        self.out_channel_mask_0 = make_channel_mask(16)
+        self.db0 = self.irb_bottleneck(
+            3, 16, repeat_masks[0], 2, expansion, self.out_channel_mask_0
+        )
+
         self.repeat_mask_1 = nn.Parameter(
             torch.ones(repeat_masks[1], requires_grad=True)
         )
-        self.out_channel_mask_1 = nn.Parameter(torch.ones(16, requires_grad=True))
+        self.out_channel_mask_1 = make_channel_mask(24)
         self.db1 = self.irb_bottleneck(
-            3, 16, repeat_masks[1], 2, expansion, self.out_channel_mask_1
+            16, 24, repeat_masks[1], 2, expansion, self.out_channel_mask_1
         )
 
         self.repeat_mask_2 = nn.Parameter(
             torch.ones(repeat_masks[2], requires_grad=True)
         )
-        self.out_channel_mask_2 = nn.Parameter(torch.ones(32, requires_grad=True))
+        self.out_channel_mask_2 = make_channel_mask(32)
         self.db2 = self.irb_bottleneck(
-            16, 32, repeat_masks[2], 2, expansion, self.out_channel_mask_2
+            24, 32, repeat_masks[2], 2, expansion, self.out_channel_mask_2
         )
 
         self.repeat_mask_3 = nn.Parameter(
             torch.ones(repeat_masks[3], requires_grad=True)
         )
-        self.out_channel_mask_3 = nn.Parameter(torch.ones(48, requires_grad=True))
+        self.out_channel_mask_3 = make_channel_mask(48)
         self.db3 = self.irb_bottleneck(
             32, 48, repeat_masks[3], 2, expansion, self.out_channel_mask_3
         )
@@ -345,7 +349,7 @@ class UNetMobileNetv3(nn.Module):
         self.repeat_mask_4 = nn.Parameter(
             torch.ones(repeat_masks[4], requires_grad=True)
         )
-        self.out_channel_mask_4 = nn.Parameter(torch.ones(96, requires_grad=True))
+        self.out_channel_mask_4 = make_channel_mask(96)
         self.db4 = self.irb_bottleneck(
             48, 96, repeat_masks[4], 2, expansion, self.out_channel_mask_4
         )
@@ -353,7 +357,7 @@ class UNetMobileNetv3(nn.Module):
         self.repeat_mask_5 = nn.Parameter(
             torch.ones(repeat_masks[5], requires_grad=True)
         )
-        self.out_channel_mask_5 = nn.Parameter(torch.ones(128, requires_grad=True))
+        self.out_channel_mask_5 = make_channel_mask(128)
         self.db5 = self.irb_bottleneck(
             96, 128, repeat_masks[5], 2, expansion, self.out_channel_mask_5
         )
@@ -361,34 +365,31 @@ class UNetMobileNetv3(nn.Module):
         self.repeat_mask_6 = nn.Parameter(
             torch.ones(repeat_masks[6], requires_grad=True)
         )
-        self.out_channel_mask_6 = nn.Parameter(torch.ones(256, requires_grad=True))
+        self.out_channel_mask_6 = make_channel_mask(320)
         self.db6 = self.irb_bottleneck(
-            128, 256, repeat_masks[6], 2, expansion, self.out_channel_mask_6
-        )
-
-        self.out_channel_mask_7 = nn.Parameter(torch.ones(320, requires_grad=True))
-        self.db7 = self.irb_bottleneck(
-            256, 320, 0, 1, expansion, self.out_channel_mask_7
+            128, 320, repeat_masks[6], 1, expansion, self.out_channel_mask_6
         )
 
         # decoding arm
         self.ub1 = self.irb_bottleneck(
-            320, 128, 0, 2, expansion, self.out_channel_mask_5, True
+            320, 96, 0, 2, expansion, self.out_channel_mask_4, True
         )
         self.ub2 = self.irb_bottleneck(
-            128, 96, 0, 2, expansion, self.out_channel_mask_4, True
-        )
-        self.ub3 = self.irb_bottleneck(
             96, 48, 0, 2, expansion, self.out_channel_mask_3, True
         )
-        self.ub4 = self.irb_bottleneck(
+        self.ub3 = self.irb_bottleneck(
             48, 32, 0, 2, expansion, self.out_channel_mask_2, True
         )
-        self.ub5 = self.irb_bottleneck(
-            32, 16, 0, 2, expansion, self.out_channel_mask_1, True
+        self.ub4 = self.irb_bottleneck(
+            32, 24, 0, 2, expansion, self.out_channel_mask_1, True
         )
-        self.out_channel = nn.Parameter(torch.ones(3), requires_grad=False)
-        self.ub6 = self.irb_bottleneck(16, 3, 0, 2, expansion, self.out_channel, True)
+        self.ub5 = self.irb_bottleneck(
+            24, 16, 0, 2, expansion, self.out_channel_mask_0, True
+        )
+        self.out_channel = make_channel_mask(3, False)
+        self.ub6 = self.irb_bottleneck(
+            16, 3, 0, 2, expansion, self.out_channel, True
+        )
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
         """
@@ -451,14 +452,13 @@ class UNetMobileNetv3(nn.Module):
 
     def disable_architecture_search(self):
         out_channel_masks = [
+            self.out_channel_mask_0,
             self.out_channel_mask_1,
             self.out_channel_mask_2,
             self.out_channel_mask_3,
             self.out_channel_mask_4,
             self.out_channel_mask_5,
             self.out_channel_mask_6,
-            self.out_channel_mask_7,
-            self.out_channel,
         ]
         blocks = [
             self.db1,
@@ -467,7 +467,6 @@ class UNetMobileNetv3(nn.Module):
             self.db4,
             self.db5,
             self.db6,
-            self.db7,
             self.ub1,
             self.ub2,
             self.ub3,
@@ -476,6 +475,7 @@ class UNetMobileNetv3(nn.Module):
             self.ub6,
         ]
         repeat_masks = [
+            self.repeat_mask_0,
             self.repeat_mask_1,
             self.repeat_mask_2,
             self.repeat_mask_3,
@@ -495,36 +495,35 @@ class UNetMobileNetv3(nn.Module):
             item.se_mask.requires_grad = False
 
     def forward(self, x):
-        x1 = x
-        x2, macs2 = self.irb_forward(self.db1, x1, self.repeat_mask_1)
-        x3, macs3 = self.irb_forward(self.db2, x2, self.repeat_mask_2)
-        x4, macs4 = self.irb_forward(self.db3, x3, self.repeat_mask_3)
-        x5, macs5 = self.irb_forward(self.db4, x4, self.repeat_mask_4)
-        x6, macs6 = self.irb_forward(self.db5, x5, self.repeat_mask_5)
-        x7, macs7 = self.irb_forward(self.db6, x6, self.repeat_mask_6)
-        x8, macs8 = self.irb_forward(self.db7, x7)
+        x1, macs1 = self.irb_forward(self.db0, x)
+        x2, macs2 = self.irb_forward(self.db1, x1)
+        x3, macs3 = self.irb_forward(self.db2, x2)
+        x4, macs4 = self.irb_forward(self.db3, x3)
+        x5, macs5 = self.irb_forward(self.db4, x4)
+        x6, macs6 = self.irb_forward(self.db5, x5)
+        x7, macs7 = self.irb_forward(self.db6, x6)
 
         # Right arm / Decoding arm with skip connections
-        d1, macs9 = self.irb_forward(self.ub1, x8)
-        d1 += x6
+        d1, macs9 = self.irb_forward(self.ub1, x7)
+        d1 += x5
         d2, macs10 = self.irb_forward(self.ub2, d1)
-        d2 += x5
+        d2 += x4
         d3, macs11 = self.irb_forward(self.ub3, d2)
-        d3 += x4
+        d3 += x3
         d4, macs12 = self.irb_forward(self.ub4, d3)
-        d4 += x3
+        d4 += x2
         d5, macs13 = self.irb_forward(self.ub5, d4)
-        d5 += x2
+        d5 += x1
         d6, macs14 = self.irb_forward(self.ub6, d5)
         return (
             d6,
-            macs2
+            macs1
+            + macs2
             + macs3
             + macs4
             + macs5
             + macs6
             + macs7
-            + macs8
             + macs9
             + macs10
             + macs11
@@ -533,8 +532,12 @@ class UNetMobileNetv3(nn.Module):
             + macs14,
         )
 
+# input = torch.randn(1, 3, 512, 512)
+# model = UNetMobileNetv3(512)
+# out, latency = model(input)
+# print(out.shape, latency)
 
-if 0:
+if 1:
 
     target = torch.randn(1,3,512,512).cuda()
     input = torch.randn(1, 3, 512, 512).cuda()
@@ -561,15 +564,14 @@ if 0:
         if latency_constraint == 0:
             model.disable_architecture_search()
 
-        print("Epoch: {}, Loss: {}, LC: {}, Lat: {}, Ori_lat: {}".format(epoch, loss.item(), latency_constraint.item(), latency.item(), initial_latency.item()))
+        # print("Epoch: {}, Loss: {}, LC: {}, Improvement: {}".format(epoch, loss.item(), latency_constraint.item(), latency.item()/initial_latency.item()))
         loss.backward()
-    #     # print(torch.sum(model.repeat_mask_5).item())
-    #     # print("******", model.irb_bottleneck2[0].expansion_mask.grad)
+
         optimizer.step()
 
     # print(torch.sum(model.irb_bottleneck2[0].expansion_mask).item())
     torch.save(model.state_dict(), './my_model.pth')
 """
-baseline_512 --> 327401472.0 --> 70 ms
+baseline_512 --> 327,401,472.0 --> 70 ms
 baseline_256 -->  49278976.0 --> 40 ms
 """
