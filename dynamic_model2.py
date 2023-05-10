@@ -8,6 +8,7 @@ from torch.autograd import Function
 import torch
 import torch.nn.functional as F
 
+criterion = nn.CrossEntropyLoss()
 
 def gumbel_softmax_sample(logits, temperature=0.1, eps=1e-20):
     U = torch.rand(logits.size()).to(logits.device)
@@ -34,15 +35,17 @@ def my_softmax(input):
 def make_channel_mask(dim, requires_grad=True):
     ones = torch.ones((dim, 1), requires_grad=requires_grad)
     zeros = torch.zeros((dim, 1), requires_grad=requires_grad)
+    target = torch.zeros((dim,), requires_grad=False, dtype=torch.long, device='cuda')
     return nn.Parameter(
         torch.cat((zeros, ones), dim=1), requires_grad=requires_grad
-    )
+    ), target
 
 def get_activation(logits):
     softmax = nn.LogSoftmax(dim=1)
     probs = softmax(logits)
-    # labels = torch.argmax(probs, dim=1)
-    return probs
+    labels = torch.argmax(probs, dim=1)
+    one_hot_labels = F.one_hot(labels, num_classes=3)
+    return labels
 
 
 
@@ -124,6 +127,7 @@ class InvertedResidualBase(nn.Module):
         stride,
         expansion=None,
         out_channel_mask=None,
+        out_channel_target=None,
     ):
         super(InvertedResidualBase, self).__init__()
         assert stride in [1, 2]
@@ -134,7 +138,8 @@ class InvertedResidualBase(nn.Module):
         self.identity = stride == 1 and inp == oup
 
         self.out_channel_mask = out_channel_mask
-        self.expansion_mask = make_channel_mask(hidden_dim)
+        self.out_channel_target = out_channel_target
+        self.expansion_mask, self.target_mask = make_channel_mask(hidden_dim)
 
         self.relu = nn.ReLU(inplace=True)
 
@@ -204,10 +209,11 @@ class InvertedResidualBase(nn.Module):
         )
 
     def forward(self, x):
-        print("*******", self.out_channel_mask)
-        out_channel_mask = gumbel_softmax_sample(self.out_channel_mask)
-        print("*******", out_channel_mask)
-        expansion_mask = gumbel_softmax_sample(self.expansion_mask)
+        loss = criterion(self.expansion_mask, self.target_mask)
+        loss += criterion(self.out_channel_mask, self.out_channel_target)
+
+        out_channel_mask = get_activation(self.out_channel_mask)
+        expansion_mask = get_activation(self.expansion_mask)
         expansion_sum = torch.sum(expansion_mask)
         out_channel_sum = torch.sum(out_channel_mask)
         expansion_mask = expansion_mask.view(1, -1, 1, 1)
@@ -246,7 +252,8 @@ class InvertedResidualBase(nn.Module):
 
         # mimic skipping output layer
         out = pwl_out * out_channel_mask
-        return out, total_macs
+
+        return out, total_macs, loss
 
 
 class InvertedResidualBlock(InvertedResidualBase):
@@ -257,6 +264,7 @@ class InvertedResidualBlock(InvertedResidualBase):
         stride,
         expansion=None,
         out_channel_mask=None,
+        out_channel_target=None,
     ):
         super().__init__(
             inp,
@@ -264,6 +272,7 @@ class InvertedResidualBlock(InvertedResidualBase):
             stride,
             expansion,
             out_channel_mask,
+            out_channel_target,
         )
         hidden_dim = expansion * inp
         self.dw = nn.Sequential(
@@ -288,6 +297,7 @@ class UpInvertedResidualBlock(InvertedResidualBase):
         stride,
         expansion,
         out_channel_mask=None,
+        out_channel_target=None,
     ):
         super().__init__(
             inp,
@@ -295,6 +305,7 @@ class UpInvertedResidualBlock(InvertedResidualBase):
             stride,
             expansion,
             out_channel_mask,
+            out_channel_target,
         )
         hidden_dim = expansion * inp
         self.dw = nn.Sequential(
@@ -328,79 +339,79 @@ class UNetMobileNetv3(nn.Module):
         self.repeat_mask_0 = nn.Parameter(
             torch.ones(repeat_masks[0], requires_grad=True)
         )
-        self.out_channel_mask_0 = make_channel_mask(16)
+        self.out_channel_mask_0, self.target_mask_0 = make_channel_mask(16)
         self.db0 = self.irb_bottleneck(
-            3, 16, repeat_masks[0], 2, expansion, self.out_channel_mask_0
+            3, 16, repeat_masks[0], 2, expansion, self.out_channel_mask_0, self.target_mask_0
         )
 
-        self.repeat_mask_1 = nn.Parameter(
-            torch.ones(repeat_masks[1], requires_grad=True)
-        )
-        self.out_channel_mask_1 = make_channel_mask(24)
-        self.db1 = self.irb_bottleneck(
-            16, 24, repeat_masks[1], 2, expansion, self.out_channel_mask_1
-        )
+        # self.repeat_mask_1 = nn.Parameter(
+        #     torch.ones(repeat_masks[1], requires_grad=True)
+        # )
+        # self.out_channel_mask_1 = make_channel_mask(24)
+        # self.db1 = self.irb_bottleneck(
+        #     16, 24, repeat_masks[1], 2, expansion, self.out_channel_mask_1
+        # )
 
-        self.repeat_mask_2 = nn.Parameter(
-            torch.ones(repeat_masks[2], requires_grad=True)
-        )
-        self.out_channel_mask_2 = make_channel_mask(32)
-        self.db2 = self.irb_bottleneck(
-            24, 32, repeat_masks[2], 2, expansion, self.out_channel_mask_2
-        )
+        # self.repeat_mask_2 = nn.Parameter(
+        #     torch.ones(repeat_masks[2], requires_grad=True)
+        # )
+        # self.out_channel_mask_2 = make_channel_mask(32)
+        # self.db2 = self.irb_bottleneck(
+        #     24, 32, repeat_masks[2], 2, expansion, self.out_channel_mask_2
+        # )
 
-        self.repeat_mask_3 = nn.Parameter(
-            torch.ones(repeat_masks[3], requires_grad=True)
-        )
-        self.out_channel_mask_3 = make_channel_mask(48)
-        self.db3 = self.irb_bottleneck(
-            32, 48, repeat_masks[3], 2, expansion, self.out_channel_mask_3
-        )
+        # self.repeat_mask_3 = nn.Parameter(
+        #     torch.ones(repeat_masks[3], requires_grad=True)
+        # )
+        # self.out_channel_mask_3 = make_channel_mask(48)
+        # self.db3 = self.irb_bottleneck(
+        #     32, 48, repeat_masks[3], 2, expansion, self.out_channel_mask_3
+        # )
 
-        self.repeat_mask_4 = nn.Parameter(
-            torch.ones(repeat_masks[4], requires_grad=True)
-        )
-        self.out_channel_mask_4 = make_channel_mask(96)
-        self.db4 = self.irb_bottleneck(
-            48, 96, repeat_masks[4], 2, expansion, self.out_channel_mask_4
-        )
+        # self.repeat_mask_4 = nn.Parameter(
+        #     torch.ones(repeat_masks[4], requires_grad=True)
+        # )
+        # self.out_channel_mask_4 = make_channel_mask(96)
+        # self.db4 = self.irb_bottleneck(
+        #     48, 96, repeat_masks[4], 2, expansion, self.out_channel_mask_4
+        # )
 
-        self.repeat_mask_5 = nn.Parameter(
-            torch.ones(repeat_masks[5], requires_grad=True)
-        )
-        self.out_channel_mask_5 = make_channel_mask(128)
-        self.db5 = self.irb_bottleneck(
-            96, 128, repeat_masks[5], 2, expansion, self.out_channel_mask_5
-        )
+        # self.repeat_mask_5 = nn.Parameter(
+        #     torch.ones(repeat_masks[5], requires_grad=True)
+        # )
+        # self.out_channel_mask_5 = make_channel_mask(128)
+        # self.db5 = self.irb_bottleneck(
+        #     96, 128, repeat_masks[5], 2, expansion, self.out_channel_mask_5
+        # )
 
-        self.repeat_mask_6 = nn.Parameter(
-            torch.ones(repeat_masks[6], requires_grad=True)
-        )
-        self.out_channel_mask_6 = make_channel_mask(320)
-        self.db6 = self.irb_bottleneck(
-            128, 320, repeat_masks[6], 1, expansion, self.out_channel_mask_6
-        )
+        # self.repeat_mask_6 = nn.Parameter(
+        #     torch.ones(repeat_masks[6], requires_grad=True)
+        # )
+        # self.out_channel_mask_6 = make_channel_mask(320)
+        # self.db6 = self.irb_bottleneck(
+        #     128, 320, repeat_masks[6], 1, expansion, self.out_channel_mask_6
+        # )
 
-        # decoding arm
-        self.ub1 = self.irb_bottleneck(
-            320, 96, 0, 2, expansion, self.out_channel_mask_4, True
-        )
-        self.ub2 = self.irb_bottleneck(
-            96, 48, 0, 2, expansion, self.out_channel_mask_3, True
-        )
-        self.ub3 = self.irb_bottleneck(
-            48, 32, 0, 2, expansion, self.out_channel_mask_2, True
-        )
-        self.ub4 = self.irb_bottleneck(
-            32, 24, 0, 2, expansion, self.out_channel_mask_1, True
-        )
-        self.ub5 = self.irb_bottleneck(
-            24, 16, 0, 2, expansion, self.out_channel_mask_0, True
-        )
-        self.out_channel = make_channel_mask(3, False)
-        self.ub6 = self.irb_bottleneck(
-            16, 3, 0, 2, expansion, self.out_channel, True
-        )
+        # # decoding arm
+        # self.ub1 = self.irb_bottleneck(
+        #     320, 96, 0, 2, expansion, self.out_channel_mask_4, True
+        # )
+        # self.ub2 = self.irb_bottleneck(
+        #     96, 48, 0, 2, expansion, self.out_channel_mask_3, True
+        # )
+        # self.ub3 = self.irb_bottleneck(
+        #     48, 32, 0, 2, expansion, self.out_channel_mask_2, True
+        # )
+        # self.ub4 = self.irb_bottleneck(
+        #     32, 24, 0, 2, expansion, self.out_channel_mask_1, True
+        # )
+        # self.ub5 = self.irb_bottleneck(
+        #     24, 16, 0, 2, expansion, self.out_channel_mask_0, True
+        # )
+        # self.out_channel = make_channel_mask(3, False)
+        # self.ub6 = self.irb_bottleneck(
+        #     16, 3, 0, 2, expansion, self.out_channel, True
+        # )
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
         """
@@ -416,50 +427,52 @@ class UNetMobileNetv3(nn.Module):
         return conv
 
     def irb_bottleneck(
-        self, in_c, out_c, repeat, stride, expansion, out_channel_mask=None, up=False
+        self, in_c, out_c, repeat, stride, expansion, out_channel_mask=None, out_channel_target=None, up=False
     ):
         convs = []
         if up:
             xx = UpInvertedResidualBlock(
-                in_c, out_c, stride, expansion, out_channel_mask
+                in_c, out_c, stride, expansion, out_channel_mask, out_channel_target
             )
             convs.append(xx)
             for _ in range(repeat):
                 xx = UpInvertedResidualBlock(
-                    out_c, out_c, 1, expansion, out_channel_mask
+                    out_c, out_c, 1, expansion, out_channel_mask, out_channel_target
                 )
                 convs.append(xx)
             conv = nn.Sequential(*convs)
         else:
-            xx = InvertedResidualBlock(in_c, out_c, stride, expansion, out_channel_mask)
+            xx = InvertedResidualBlock(in_c, out_c, stride, expansion, out_channel_mask, out_channel_target)
             convs.append(xx)
 
             for _ in range(repeat):
-                xx = InvertedResidualBlock(out_c, out_c, 1, expansion, out_channel_mask)
+                xx = InvertedResidualBlock(out_c, out_c, 1, expansion, out_channel_mask, out_channel_target)
                 convs.append(xx)
             conv = nn.Sequential(*convs)
         return conv
 
     def irb_forward(self, blocks, x, block_mask=None):
         # at least one block
-        x, total_macs = blocks[0](x)
+        x, total_macs, total_loss = blocks[0](x)
 
         if block_mask is None:
             for i in range(1, len(blocks)):
                 block = blocks[i]
-                x, cur_macs = block(x)
+                x, cur_macs, cur_loss = block(x)
                 total_macs += cur_macs
+                total_loss += cur_loss
 
         else:
             assert len(block_mask) == len(blocks) - 1
             block_mask = nn.functional.relu(block_mask)
             for i in range(1, len(blocks)):
                 block = blocks[i]
-                x, cur_macs = block(x)
+                x, cur_macs, cur_loss = block(x)
                 x = x * block_mask[i - 1]
                 total_macs += cur_macs * block_mask[i - 1]
+                total_loss += cur_loss
 
-        return x, total_macs
+        return x, total_macs, total_loss
 
     def disable_architecture_search(self):
         out_channel_masks = [
@@ -506,8 +519,8 @@ class UNetMobileNetv3(nn.Module):
             item.se_mask.requires_grad = False
 
     def forward(self, x):
-        x1, macs1 = self.irb_forward(self.db0, x)
-        return x1, macs1
+        x1, macs1, loss1 = self.irb_forward(self.db0, x)
+        return x1, macs1, loss1
         # x2, macs2 = self.irb_forward(self.db1, x1)
         # x3, macs3 = self.irb_forward(self.db2, x2)
         # x4, macs4 = self.irb_forward(self.db3, x3)
@@ -559,31 +572,31 @@ if 1:
     import torch.optim as optim
 
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.L1Loss()
+    l1_criterion = nn.L1Loss()
     num_epochs = 1000
-    weight = 1e-2
+    weight = 1e-6
 
     with torch.no_grad():
-        _, initial_latency = model(input)
+        _, initial_latency, _ = model(input)
         target_latency = 0.5 * initial_latency.item()
 
     for epoch in range(num_epochs):
         optimizer.zero_grad()
 
-        out, latency = model(input)
-        loss = criterion(out, target)
-        latency_constraint = torch.mean(torch.relu((latency - target_latency) / initial_latency))
-        loss += latency_constraint * weight
-        if latency_constraint == 0:
-            model.disable_architecture_search()
+        out, latency, c_loss = model(input)
+        loss = l1_criterion(out, target) + c_loss * weight
 
-        # print("Epoch: {}, Loss: {}, LC: {}, Improvement: {}".format(epoch, loss.item(), latency_constraint.item(), latency.item()/initial_latency.item()))
+        if latency.item()/initial_latency.item() < 1:
+            break
+
+        print("Epoch: {}, Loss: {}, Improvement: {}".format(epoch, loss.item(), latency.item()/initial_latency.item()))
         loss.backward()
 
         optimizer.step()
 
+    print(model.out_channel_mask_0)
     # print(torch.sum(model.irb_bottleneck2[0].expansion_mask).item())
-    torch.save(model.state_dict(), './my_model.pth')
+    # torch.save(model.state_dict(), './my_model.pth')
 """
 baseline_512 --> 327,401,472.0 --> 70 ms
 baseline_256 -->  49278976.0 --> 40 ms

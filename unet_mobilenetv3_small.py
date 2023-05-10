@@ -165,11 +165,12 @@ class UpInvertedResidualBlock(nn.Module):
         if inp == hidden_dim:
             self.conv = nn.Sequential(
                 # dw
-                nn.ConvTranspose2d(
+                nn.Upsample(scale_factor=2, mode='bilinear'),
+                nn.Conv2d(
                     hidden_dim,
                     hidden_dim,
-                    4,
-                    stride,
+                    3,
+                    1,
                     (4 - 1) // 2,
                     groups=hidden_dim,
                     bias=False,
@@ -189,11 +190,12 @@ class UpInvertedResidualBlock(nn.Module):
                 nn.BatchNorm2d(hidden_dim),
                 h_swish() if use_hs else nn.ReLU(inplace=True),
                 # dw
-                nn.ConvTranspose2d(
+                nn.Upsample(scale_factor=2, mode='bilinear'),
+                nn.Conv2d(
                     hidden_dim,
                     hidden_dim,
-                    4,
-                    stride,
+                    3,
+                    1,
                     (4 - 1) // 2,
                     groups=hidden_dim,
                     bias=False,
@@ -295,7 +297,6 @@ class UNetMobileNetv3(nn.Module):
         x6 = self.irb_bottleneck5(x5)
         x7 = self.irb_bottleneck6(x6)
         x8 = self.irb_bottleneck7(x7)
-
         # Right arm / Decoding arm with skip connections
         d1 = self.add.add(self.D_irb1(x8), x6)
         d2 = self.add.add(self.D_irb2(d1), x5)

@@ -78,7 +78,7 @@ def fuse_model(model):
     torch.quantization.fuse_modules(model.conv3x3, ['0', '1'], inplace=True)
 
     for m in model.modules():
-        if isinstance(m, InvertedResidualBlock) or isinstance(m, UpInvertedResidualBlock):
+        if isinstance(m, InvertedResidualBlock):
             torch.quantization.fuse_modules(m.conv, ['0', '1', '2'], inplace=True)
             if len(m.conv) < 7:
                 torch.quantization.fuse_modules(m.conv, ['4', '5'], inplace=True)
@@ -86,30 +86,35 @@ def fuse_model(model):
                 torch.quantization.fuse_modules(m.conv, ['3', '4', '6'], inplace=True)
                 torch.quantization.fuse_modules(m.conv, ['7', '8'], inplace=True)
 
+        elif isinstance(m, UpInvertedResidualBlock):
+            torch.quantization.fuse_modules(m.conv, ['0', '1', '2'], inplace=True)
+            torch.quantization.fuse_modules(m.conv, ['4', '5', '7'], inplace=True)
+            torch.quantization.fuse_modules(m.conv, ['8', '9'], inplace=True)
+
     return model
 
 
 original_model = UNetMobileNetv3(512)
 print(original_model)
-pretrained_checkpoint_path = "./last.ckpt"
-checkpoint = torch.load(
-    pretrained_checkpoint_path,
-    map_location=lambda storage, loc: storage,
-)["state_dict"]
-filtered_checkpoint = {}
-for key, value in checkpoint.items():
-    target = "net_student."
-    if target in key:
-        filtered_checkpoint[key.replace(target, "")] = value
+# pretrained_checkpoint_path = "./last.ckpt"
+# checkpoint = torch.load(
+#     pretrained_checkpoint_path,
+#     map_location=lambda storage, loc: storage,
+# )["state_dict"]
+# filtered_checkpoint = {}
+# for key, value in checkpoint.items():
+#     target = "net_student."
+#     if target in key:
+#         filtered_checkpoint[key.replace(target, "")] = value
 
-model_dict = original_model.state_dict()
-model_dict.update(filtered_checkpoint)
-original_model.load_state_dict(filtered_checkpoint)
-original_model = original_model.cpu()
+# model_dict = original_model.state_dict()
+# model_dict.update(filtered_checkpoint)
+# original_model.load_state_dict(filtered_checkpoint)
+# original_model = original_model.cpu()
 original_model.eval()
 
 """Prepare"""
-original_model.qconfig = torch.quantization.get_default_qconfig("qnnpack")
+original_model.qconfig = torch.quantization.get_default_qat_qconfig("qnnpack")
 fused_model = fuse_model(original_model)
 prepared_model = torch.quantization.prepare(fused_model)
 
@@ -147,8 +152,8 @@ cv2.imwrite("./enhanced.png", output)
 # compare_script_and_mobile(model=quantized_model, input=input)
 
 mapping_net_trace = torch.jit.trace(quantized_model, input)
-torch.jit.save(mapping_net_trace, os.path.join(output_dir, "face_res.pt"))
-m_script = torch.jit.load(os.path.join(output_dir, "face_res.pt"))
+torch.jit.save(mapping_net_trace, os.path.join(output_dir, "latest.pt"))
+m_script = torch.jit.load(os.path.join(output_dir, "latest.pt"))
 ops = torch.jit.export_opnames(m_script)
 print(ops)
 m_script._save_for_lite_interpreter(
