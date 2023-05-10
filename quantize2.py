@@ -78,7 +78,7 @@ def fuse_model(model):
     torch.quantization.fuse_modules(model.conv3x3, ['0', '1'], inplace=True)
 
     for m in model.modules():
-        if isinstance(m, InvertedResidualBlock):
+        if isinstance(m, InvertedResidualBlock) or isinstance(m, UpInvertedResidualBlock):
             torch.quantization.fuse_modules(m.conv, ['0', '1', '2'], inplace=True)
             if len(m.conv) < 7:
                 torch.quantization.fuse_modules(m.conv, ['4', '5'], inplace=True)
@@ -90,6 +90,7 @@ def fuse_model(model):
 
 
 original_model = UNetMobileNetv3(512)
+print(original_model)
 pretrained_checkpoint_path = "./last.ckpt"
 checkpoint = torch.load(
     pretrained_checkpoint_path,
