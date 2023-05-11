@@ -165,12 +165,11 @@ class UpInvertedResidualBlock(nn.Module):
         if inp == hidden_dim:
             self.conv = nn.Sequential(
                 # dw
-                nn.Upsample(scale_factor=2, mode='bilinear'),
-                nn.Conv2d(
+                nn.ConvTranspose2d(
                     hidden_dim,
                     hidden_dim,
-                    3,
-                    1,
+                    4,
+                    stride,
                     (4 - 1) // 2,
                     groups=hidden_dim,
                     bias=False,
@@ -190,12 +189,11 @@ class UpInvertedResidualBlock(nn.Module):
                 nn.BatchNorm2d(hidden_dim),
                 h_swish() if use_hs else nn.ReLU(inplace=True),
                 # dw
-                nn.Upsample(scale_factor=2, mode='bilinear'),
-                nn.Conv2d(
+                nn.ConvTranspose2d(
                     hidden_dim,
                     hidden_dim,
-                    3,
-                    1,
+                    4,
+                    stride,
                     (4 - 1) // 2,
                     groups=hidden_dim,
                     bias=False,
@@ -288,7 +286,7 @@ class UNetMobileNetv3(nn.Module):
         return conv
 
     def forward(self, x):
-        x = self.quant(x)
+        # x = self.quant(x)
         x1 = self.conv3x3(x)
         x2 = self.irb_bottleneck1(x1)
         x3 = self.irb_bottleneck2(x2)
@@ -297,6 +295,8 @@ class UNetMobileNetv3(nn.Module):
         x6 = self.irb_bottleneck5(x5)
         x7 = self.irb_bottleneck6(x6)
         x8 = self.irb_bottleneck7(x7)
+        x8 = self.dequant(x8)
+
         # Right arm / Decoding arm with skip connections
         d1 = self.add.add(self.D_irb1(x8), x6)
         d2 = self.add.add(self.D_irb2(d1), x5)
@@ -305,5 +305,5 @@ class UNetMobileNetv3(nn.Module):
         d5 = self.add.add(self.D_irb5(d4), x2)
         d6 = self.D_irb6(d5)
         d7 = self.D_irb7(d6)
-        # return d7
-        return self.dequant(d7)
+        return d7
+        # return self.dequant(d7)
