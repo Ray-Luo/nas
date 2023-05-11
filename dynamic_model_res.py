@@ -1,6 +1,3 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
-
-# Author: Lei Luo (luoleyouluole@fb.com)
 import torch.nn as nn
 import torch
 
@@ -286,15 +283,15 @@ class UNetMobileNetv3(nn.Module):
 
 
 
-target = torch.randn(1,3,512,512)
-input = torch.randn(1, 3, 512, 512)
-model = UNetMobileNetv3(512)
-out = model(input)
-print(out.size())
+# target = torch.randn(1,3,512,512)
+# input = torch.randn(1, 3, 512, 512)
+# model = UNetMobileNetv3(512)
+# out = model(input)
+# print(out.size())
 
-from thop import profile
-macs, params = profile(model, inputs=(input, ))
-print(macs)
+# from thop import profile
+# macs, params = profile(model, inputs=(input, ))
+# print(macs)
 
-num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print("Number of trainable parameters: ", num_params)
+# num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+# print("Number of trainable parameters: ", num_params)

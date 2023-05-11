@@ -1,8 +1,3 @@
-
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
-
-# Author: Lei Luo (luoleyouluole@fb.com)
-
 import torch.nn as nn
 
 class FusedConvTranspose2dBNReLU(nn.Module):
