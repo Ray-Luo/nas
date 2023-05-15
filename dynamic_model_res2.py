@@ -1,8 +1,6 @@
 import torch.nn as nn
+import math
 import torch
-
-
-import torch.nn as nn
 
 
 def _make_divisible(v, divisor, min_value=None):
@@ -18,7 +16,7 @@ def _make_divisible(v, divisor, min_value=None):
 
 
 class h_sigmoid(nn.Module):
-    def __init__(self, inplace=False):
+    def __init__(self, inplace=True):
         super(h_sigmoid, self).__init__()
         self.relu = nn.ReLU6(inplace=inplace)
 
@@ -27,12 +25,24 @@ class h_sigmoid(nn.Module):
 
 
 class h_swish(nn.Module):
-    def __init__(self, inplace=False):
+    def __init__(self, inplace=True):
         super(h_swish, self).__init__()
-        self.sigmoid = h_sigmoid(inplace=inplace)
+        # self.sigmoid = h_sigmoid(inplace=inplace)
+
+        # self.quant = torch.quantization.QuantStub()
+        # self.dequant = torch.quantization.DeQuantStub()
+        # self.relu = nn.ReLU6(inplace=inplace)
+        # self.add = nn.quantized.FloatFunctional()
+        # self.act = torch.nn.quantized.functional.hardswish(inplace=True)
 
     def forward(self, x):
-        return x * self.sigmoid(x)
+        # x = x.dequantize()
+        # y = x * self.sigmoid(x)
+        scale = 1.0
+        zero_point = 0
+        # dtype = torch.quint8
+        # output = torch.quantize_per_tensor(y, scale, zero_point, dtype)
+        return torch.nn.quantized.functional.hardswish(x, scale, zero_point)
 
 
 class SELayer(nn.Module):
@@ -41,16 +51,18 @@ class SELayer(nn.Module):
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(channel, _make_divisible(channel // reduction, 8)),
-            nn.ReLU(inplace=False),
+            nn.ReLU(inplace=True),
             nn.Linear(_make_divisible(channel // reduction, 8), channel),
-            h_sigmoid(),
+            # h_sigmoid(),
+            nn.Hardsigmoid(),
         )
+        self.op = nn.quantized.FloatFunctional()
 
     def forward(self, x):
         b, c, _, _ = x.size()
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
-        return x * y
+        return self.op.mul(x, y)
 
 
 def conv_3x3_bn(inp, oup, stride):
@@ -69,7 +81,7 @@ def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
     return nn.Sequential(
         nn.Conv2d(in_c, in_c, kernel_size=k, padding=p, groups=in_c, stride=s),
         nn.BatchNorm2d(num_features=in_c),
-        nn.ReLU6(inplace=False),
+        nn.ReLU6(inplace=True),
         nn.Conv2d(in_c, out_c, kernel_size=1),
     )
 
@@ -93,7 +105,8 @@ class InvertedResidualBase(nn.Module):
 
         self.if_pw = hidden_dim == inp
 
-        self.act = h_swish() if use_hs else nn.ReLU(inplace=False)
+        self.act = h_swish() if use_hs else nn.ReLU(inplace=True)
+        # self.act = nn.SiLU(inplace=True) if use_hs else nn.ReLU(inplace=True)
 
         self.se = SELayer(hidden_dim) if use_se else nn.Identity()
 
@@ -106,6 +119,8 @@ class InvertedResidualBase(nn.Module):
             nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
             nn.BatchNorm2d(oup),
         )
+
+        self.op = nn.quantized.FloatFunctional()
 
     def forward(self, x):
         # point_wise conv
@@ -124,7 +139,7 @@ class InvertedResidualBase(nn.Module):
         pwl_out = self.pw_linear(out)
 
         if self.identity:
-            return x + pwl_out
+            return self.op.add(x, pwl_out)
         else:
             return pwl_out
 
@@ -180,11 +195,12 @@ class UpInvertedResidualBlock(InvertedResidualBase):
             use_se,
         )
         self.dw = nn.Sequential(
-            nn.ConvTranspose2d(
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.Conv2d(
                 hidden_dim,
                 hidden_dim,
-                4,
-                stride,
+                3,
+                1,
                 (4 - 1) // 2,
                 groups=hidden_dim,
                 bias=False,
@@ -201,46 +217,49 @@ class UNetMobileNetv3(nn.Module):
     def __init__(self, out_size):
         super(UNetMobileNetv3, self).__init__()
         self.out_size = out_size
+        self.log_size = int(math.log2(out_size))
 
         # encoding arm
         self.conv3x3 = self.depthwise_conv(3, 16, p=1, s=2)
         self.irb_bottleneck1 = nn.Sequential(
-            InvertedResidualBlock(16, 21, 2, hidden_dim=93),
+            InvertedResidualBlock(16, 16, 1, hidden_dim=62),
         )
         self.irb_bottleneck2 = nn.Sequential(
-            InvertedResidualBlock(21, 31, 2, hidden_dim=127),
-            InvertedResidualBlock(31, 31, 1, hidden_dim=127),
+            InvertedResidualBlock(16, 21, 2, hidden_dim=93),
         )
         self.irb_bottleneck3 = nn.Sequential(
-            InvertedResidualBlock(31, 62, 2, hidden_dim=189),
-            InvertedResidualBlock(62, 62, 1, hidden_dim=189),
+            InvertedResidualBlock(21, 31, 2, hidden_dim=127),
+            InvertedResidualBlock(31, 31, 1, hidden_dim=193),
         )
         self.irb_bottleneck4 = nn.Sequential(
-            InvertedResidualBlock(62, 84, 2, hidden_dim=382),
-            InvertedResidualBlock(84, 84, 1, hidden_dim=382),
+            InvertedResidualBlock(31, 63, 2, hidden_dim=190),
+            InvertedResidualBlock(63, 63, 1, hidden_dim=385),
         )
         self.irb_bottleneck5 = nn.Sequential(
-            InvertedResidualBlock(84, 169, 2, hidden_dim=507, use_hs=False),
+            InvertedResidualBlock(63, 84, 2, hidden_dim=382, use_hs=False),
+            InvertedResidualBlock(84, 84, 1, hidden_dim=513, use_hs=False),
         )
         self.irb_bottleneck6 = nn.Sequential(
-            InvertedResidualBlock(169, 209, 1, hidden_dim=1039, use_hs=False),
+            InvertedResidualBlock(84, 169, 2, hidden_dim=507, use_hs=False),
         )
-
+        self.irb_bottleneck7 = nn.Sequential(
+            InvertedResidualBlock(169, 209, 1, hidden_dim=1039),
+        )
         # decoding arm
         self.D_irb1 = nn.Sequential(
             UpInvertedResidualBlock(209, 84, 2, hidden_dim=1291),
         )
         self.D_irb2 = nn.Sequential(
-            UpInvertedResidualBlock(84, 62, 2, hidden_dim=551),
+            UpInvertedResidualBlock(84, 63, 2, hidden_dim=516),
         )
         self.D_irb3 = nn.Sequential(
-            UpInvertedResidualBlock(62, 31, 2, hidden_dim=377),
+            UpInvertedResidualBlock(63, 31, 2, hidden_dim=378),
         )
         self.D_irb4 = nn.Sequential(
-            UpInvertedResidualBlock(31, 21, 2, hidden_dim=189),
+            UpInvertedResidualBlock(31, 21, 2, hidden_dim=190),
         )
         self.D_irb5 = nn.Sequential(
-            UpInvertedResidualBlock(21, 16, 2, hidden_dim=124),
+            UpInvertedResidualBlock(21, 16, 2, hidden_dim=125),
         )
         self.D_irb6 = nn.Sequential(
             UpInvertedResidualBlock(16, 16, 2, hidden_dim=93),
@@ -248,6 +267,12 @@ class UNetMobileNetv3(nn.Module):
         self.D_irb7 = nn.Sequential(
             InvertedResidualBlock(16, 3, 1, hidden_dim=60),
         )
+
+        import torch
+        self.quant = torch.quantization.QuantStub()
+        self.dequant = torch.quantization.DeQuantStub()
+
+        self.op = nn.quantized.FloatFunctional()
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
         conv = nn.Sequential(
@@ -259,6 +284,7 @@ class UNetMobileNetv3(nn.Module):
         return conv
 
     def forward(self, x):
+        x = self.quant(x)
         x1 = self.conv3x3(x)
         x2 = self.irb_bottleneck1(x1)
         x3 = self.irb_bottleneck2(x2)
@@ -266,28 +292,15 @@ class UNetMobileNetv3(nn.Module):
         x5 = self.irb_bottleneck4(x4)
         x6 = self.irb_bottleneck5(x5)
         x7 = self.irb_bottleneck6(x6)
+        x8 = self.irb_bottleneck7(x7)
 
         # Right arm / Decoding arm with skip connections
-        d1 = self.D_irb1(x7) + x5
-        d2 = self.D_irb2(d1) + x4
-        d3 = self.D_irb3(d2) + x3
-        d4 = self.D_irb4(d3) + x2
-        d5 = self.D_irb5(d4) + x1
+        d1 = self.op.add(self.D_irb1(x8), x6)
+        d2 = self.op.add(self.D_irb2(d1), x5)
+        d3 = self.op.add(self.D_irb3(d2), x4)
+        d4 = self.op.add(self.D_irb4(d3), x3)
+        d5 = self.op.add(self.D_irb5(d4), x2)
         d6 = self.D_irb6(d5)
         d7 = self.D_irb7(d6)
-        return d7
-
-
-
-target = torch.randn(1,3,512,512)
-input = torch.randn(1, 3, 512, 512)
-model = UNetMobileNetv3(512)
-out = model(input)
-print(out.size())
-
-from thop import profile
-macs, params = profile(model, inputs=(input, ))
-print(macs)
-
-num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print("Number of trainable parameters: ", num_params)
+        # return d7
+        return self.dequant(d7)

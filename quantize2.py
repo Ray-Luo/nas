@@ -1,6 +1,6 @@
 import os
 import torch
-from unet_mobilenetv3_small import InvertedResidualBlock, UNetMobileNetv3, UpInvertedResidualBlock
+from dynamic_model_res2 import InvertedResidualBlock, UNetMobileNetv3, UpInvertedResidualBlock
 import torch.nn as nn
 import torch.quantization
 import io
@@ -79,17 +79,17 @@ def fuse_model(model):
 
     for m in model.modules():
         if isinstance(m, InvertedResidualBlock):
-            torch.quantization.fuse_modules(m.conv, ['0', '1', '2'], inplace=True)
-            if len(m.conv) < 7:
-                torch.quantization.fuse_modules(m.conv, ['4', '5'], inplace=True)
-            else:
-                torch.quantization.fuse_modules(m.conv, ['3', '4', '6'], inplace=True)
-                torch.quantization.fuse_modules(m.conv, ['7', '8'], inplace=True)
+            torch.quantization.fuse_modules(m.se.fc, ['0', '1'], inplace=True)
+            torch.quantization.fuse_modules(m.pw, ['0', '1'], inplace=True)
+            torch.quantization.fuse_modules(m.pw_linear, ['0', '1'], inplace=True)
+            torch.quantization.fuse_modules(m.dw, ['0', '1'], inplace=True)
+
 
         elif isinstance(m, UpInvertedResidualBlock):
-            torch.quantization.fuse_modules(m.conv, ['0', '1', '2'], inplace=True)
-            torch.quantization.fuse_modules(m.conv, ['4', '5', '7'], inplace=True)
-            torch.quantization.fuse_modules(m.conv, ['8', '9'], inplace=True)
+            torch.quantization.fuse_modules(m.se.fc, ['0', '1'], inplace=True)
+            torch.quantization.fuse_modules(m.pw, ['0', '1'], inplace=True)
+            torch.quantization.fuse_modules(m.pw_linear, ['0', '1'], inplace=True)
+            torch.quantization.fuse_modules(m.dw, ['1', '2'], inplace=True)
 
     return model
 
