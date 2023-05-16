@@ -9,6 +9,18 @@ from contextlib import contextmanager
 import cv2
 from torchvision.transforms.functional import normalize
 
+from torch.quantization import MinMaxObserver
+
+class HardswishObserver(MinMaxObserver):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x):
+        # Update min/max with the input range clamped to [0, 6]
+        x = torch.clamp(x, 0, 6)
+        return super().forward(x)
+
+
 def tensor2img(tensor, rgb2bgr=True, min_max=(0, 1)):
     output = tensor.squeeze(0).detach().clamp_(*min_max).permute(1, 2, 0)
     output = (output - min_max[0]) / (min_max[1] - min_max[0]) * 255
@@ -114,7 +126,10 @@ print(original_model)
 original_model.eval()
 
 """Prepare"""
+from torch.quantization import get_default_qconfig
+
 original_model.qconfig = torch.quantization.get_default_qat_qconfig("qnnpack")
+# original_model.qconfig = custom_qconfig()
 fused_model = fuse_model(original_model)
 prepared_model = torch.quantization.prepare(fused_model)
 
@@ -123,10 +138,10 @@ prepared_model = torch.quantization.prepare(fused_model)
 - This example uses random data for convenience.
 Use representative (validation) data instead.
 """
-# with torch.inference_mode():
-#   for _ in range(10):
-#     x = torch.rand(1,2, 28, 28)
-#     m(x)
+with torch.no_grad():
+  for _ in range(10):
+    x = torch.rand(1, 3, 512, 512)
+    prepared_model(x)
 
 """Convert"""
 quantized_model = torch.quantization.convert(prepared_model)

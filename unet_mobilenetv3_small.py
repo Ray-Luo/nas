@@ -280,8 +280,18 @@ class UNetMobileNetv3(nn.Module):
             conv = nn.Sequential(*convs)
         return conv
 
+    def preprocess(self, x):
+        print(x.shape)
+        return x.unsqueeze(0).permute(0, 2, 3, 1).contiguous()
+
+    def post_process(self, tensor, rgb2bgr=True, min_max=(0, 1)):
+        output = tensor.clamp_(*min_max)#.permute(1, 2, 0)
+        output = (output - min_max[0]) / (min_max[1] - min_max[0]) * 255
+        return output
+
     def forward(self, x):
         # x = self.quant(x)
+        # x = self.preprocess(x)
         x1 = self.conv3x3(x)
         x2 = self.irb_bottleneck1(x1)
         x3 = self.irb_bottleneck2(x2)
@@ -290,7 +300,6 @@ class UNetMobileNetv3(nn.Module):
         x6 = self.irb_bottleneck5(x5)
         x7 = self.irb_bottleneck6(x6)
         x8 = self.irb_bottleneck7(x7)
-        x8 = self.dequant(x8)
 
         # Right arm / Decoding arm with skip connections
         d1 = self.add.add(self.D_irb1(x8), x6)
@@ -300,5 +309,6 @@ class UNetMobileNetv3(nn.Module):
         d5 = self.add.add(self.D_irb5(d4), x2)
         d6 = self.D_irb6(d5)
         d7 = self.D_irb7(d6)
+        d7 = self.post_process(d7)
         return d7
         # return self.dequant(d7)

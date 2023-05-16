@@ -10,7 +10,21 @@ target = torch.randn(1,3,512,512)
 input = torch.randn(1, 3, 512, 512)
 model = UNetMobileNetv3(512)
 
-# model.load_state_dict(torch.load('./my_model.pth', map_location=torch.device('cpu')))
+pretrained_checkpoint_path = "./last.ckpt"
+checkpoint = torch.load(
+    pretrained_checkpoint_path,
+    map_location=lambda storage, loc: storage,
+)["state_dict"]
+filtered_checkpoint = {}
+for key, value in checkpoint.items():
+    target = "net_student."
+    if target in key:
+        filtered_checkpoint[key.replace(target, "")] = value
+
+model_dict = model.state_dict()
+model_dict.update(filtered_checkpoint)
+model.load_state_dict(filtered_checkpoint)
+model = model.cpu()
 model.eval()
 
 

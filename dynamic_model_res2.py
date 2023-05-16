@@ -1,7 +1,5 @@
 import torch.nn as nn
 import math
-import torch
-
 
 def _make_divisible(v, divisor, min_value=None):
     # ensure that all layers have a channel number that is divisible by 8
@@ -15,36 +13,6 @@ def _make_divisible(v, divisor, min_value=None):
     return new_v
 
 
-class h_sigmoid(nn.Module):
-    def __init__(self, inplace=True):
-        super(h_sigmoid, self).__init__()
-        self.relu = nn.ReLU6(inplace=inplace)
-
-    def forward(self, x):
-        return self.relu(x + 3) / 6
-
-
-class h_swish(nn.Module):
-    def __init__(self, inplace=True):
-        super(h_swish, self).__init__()
-        # self.sigmoid = h_sigmoid(inplace=inplace)
-
-        # self.quant = torch.quantization.QuantStub()
-        # self.dequant = torch.quantization.DeQuantStub()
-        # self.relu = nn.ReLU6(inplace=inplace)
-        # self.add = nn.quantized.FloatFunctional()
-        # self.act = torch.nn.quantized.functional.hardswish(inplace=True)
-
-    def forward(self, x):
-        # x = x.dequantize()
-        # y = x * self.sigmoid(x)
-        scale = 1.0
-        zero_point = 0
-        # dtype = torch.quint8
-        # output = torch.quantize_per_tensor(y, scale, zero_point, dtype)
-        return torch.nn.quantized.functional.hardswish(x, scale, zero_point)
-
-
 class SELayer(nn.Module):
     def __init__(self, channel, reduction=4):
         super(SELayer, self).__init__()
@@ -53,8 +21,7 @@ class SELayer(nn.Module):
             nn.Linear(channel, _make_divisible(channel // reduction, 8)),
             nn.ReLU(inplace=True),
             nn.Linear(_make_divisible(channel // reduction, 8), channel),
-            # h_sigmoid(),
-            nn.Hardsigmoid(),
+            nn.Hardsigmoid(inplace=True),
         )
         self.op = nn.quantized.FloatFunctional()
 
@@ -63,18 +30,6 @@ class SELayer(nn.Module):
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
         return self.op.mul(x, y)
-
-
-def conv_3x3_bn(inp, oup, stride):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1, bias=False), nn.BatchNorm2d(oup), h_swish()
-    )
-
-
-def conv_1x1_bn(inp, oup):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False), nn.BatchNorm2d(oup), h_swish()
-    )
 
 
 def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
@@ -93,7 +48,6 @@ class InvertedResidualBase(nn.Module):
         oup,
         stride,
         hidden_dim,
-        use_hs=True,
         use_se=True,
     ):
         super(InvertedResidualBase, self).__init__()
@@ -105,8 +59,7 @@ class InvertedResidualBase(nn.Module):
 
         self.if_pw = hidden_dim == inp
 
-        self.act = h_swish() if use_hs else nn.ReLU(inplace=True)
-        # self.act = nn.SiLU(inplace=True) if use_hs else nn.ReLU(inplace=True)
+        self.act = nn.ReLU(inplace=True)
 
         self.se = SELayer(hidden_dim) if use_se else nn.Identity()
 
@@ -119,7 +72,6 @@ class InvertedResidualBase(nn.Module):
             nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
             nn.BatchNorm2d(oup),
         )
-
         self.op = nn.quantized.FloatFunctional()
 
     def forward(self, x):
@@ -151,7 +103,6 @@ class InvertedResidualBlock(InvertedResidualBase):
         oup,
         stride,
         hidden_dim,
-        use_hs=True,
         use_se=True,
     ):
         super().__init__(
@@ -159,7 +110,6 @@ class InvertedResidualBlock(InvertedResidualBase):
             oup,
             stride,
             hidden_dim,
-            use_hs,
             use_se,
         )
         self.dw = nn.Sequential(
@@ -183,7 +133,6 @@ class UpInvertedResidualBlock(InvertedResidualBase):
         oup,
         stride,
         hidden_dim,
-        use_hs=True,
         use_se=True,
     ):
         super().__init__(
@@ -191,7 +140,6 @@ class UpInvertedResidualBlock(InvertedResidualBase):
             oup,
             stride,
             hidden_dim,
-            use_hs,
             use_se,
         )
         self.dw = nn.Sequential(
@@ -236,11 +184,11 @@ class UNetMobileNetv3(nn.Module):
             InvertedResidualBlock(63, 63, 1, hidden_dim=385),
         )
         self.irb_bottleneck5 = nn.Sequential(
-            InvertedResidualBlock(63, 84, 2, hidden_dim=382, use_hs=False),
-            InvertedResidualBlock(84, 84, 1, hidden_dim=513, use_hs=False),
+            InvertedResidualBlock(63, 84, 2, hidden_dim=382),
+            InvertedResidualBlock(84, 84, 1, hidden_dim=513),
         )
         self.irb_bottleneck6 = nn.Sequential(
-            InvertedResidualBlock(84, 169, 2, hidden_dim=507, use_hs=False),
+            InvertedResidualBlock(84, 169, 2, hidden_dim=507),
         )
         self.irb_bottleneck7 = nn.Sequential(
             InvertedResidualBlock(169, 209, 1, hidden_dim=1039),

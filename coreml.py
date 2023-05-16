@@ -9,6 +9,31 @@ from contextlib import contextmanager
 import cv2
 from torchvision.transforms.functional import normalize
 
+from torch.backends._coreml.preprocess import (
+    CompileSpec,
+    TensorSpec,
+    CoreMLComputeUnit,
+)
+
+def model_spec():
+    return {
+        "forward": CompileSpec(
+            inputs=(
+                TensorSpec(
+                    shape=[1, 3, 512, 512],
+                ),
+            ),
+            outputs=(
+                TensorSpec(
+                    shape=[1, 3, 512, 512],
+                ),
+            ),
+            backend=CoreMLComputeUnit.ALL,
+            allow_low_precision=True,
+        ),
+    }
+
+
 def tensor2img(tensor, rgb2bgr=True, min_max=(0, 1)):
     output = tensor.squeeze(0).detach().clamp_(*min_max).permute(1, 2, 0)
     output = (output - min_max[0]) / (min_max[1] - min_max[0]) * 255
@@ -78,7 +103,7 @@ def compare_script_and_mobile(model: torch.nn.Module,
 
 
 original_model = UNetMobileNetv3(512)
-pretrained_checkpoint_path = "./last.ckpt"
+pretrained_checkpoint_path = "./last_big.ckpt"
 checkpoint = torch.load(
     pretrained_checkpoint_path,
     map_location=lambda storage, loc: storage,
@@ -103,13 +128,48 @@ normalize(input, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
 input = input.unsqueeze(0)
 print(input.shape)
 
-onnx_filename = "coreml.onnx"
-torch.onnx.export(original_model, input, onnx_filename, input_names=["input"], output_names=["output"])
-
 import coremltools as ct
-# Load the ONNX model
-model = ct.converters.onnx.convert(onnx_filename)
+if 0:
+    onnx_filename = "coreml.onnx"
+    torch.onnx.export(original_model, input, onnx_filename, input_names=["input"], output_names=["output"])
 
-# Save the Core ML model
-coreml_filename = "./coreml.mlmodel"
-model.save(coreml_filename)
+    # Load the ONNX model
+    model = ct.converters.onnx.convert(onnx_filename)
+
+    # Save the Core ML model
+    coreml_filename = "./coreml.mlmodel"
+    model.save(coreml_filename)
+
+if 1:
+    scale = 1.0 / (255.0)
+    bias = [0.5, 0.5, 0.5]
+
+    original_model = torch.jit.trace(original_model, input)
+
+    original_model = ct.convert(
+        original_model,
+        inputs=[ct.ImageType(name="input", shape=input.shape,
+        scale=scale, bias=bias)],
+        compute_units=ct.ComputeUnit.CPU_AND_NE,
+        # convert_to="mlprogram",
+        # compute_precision=ct.precision.FLOAT32,
+        outputs=[ct.ImageType(name="output",
+        scale=1.0, bias=0)],
+    )
+
+    original_model.save("model_no_metadata.mlmodel")
+
+    original_model = ct.models.MLModel("model_no_metadata.mlmodel")
+
+    original_model.user_defined_metadata["com.apple.coreml.model.preview.type"] = "faceEnhancer"
+    import json
+    labels_json = {"labels": ["background", "aeroplane", "bicycle", "bird", "board", "bottle", "bus", "car", "cat", "chair", "cow", "diningTable", "dog", "horse", "motorbike", "person", "pottedPlant", "sheep", "sofa", "train", "tvOrMonitor"]}
+    original_model.user_defined_metadata['com.apple.coreml.model.preview.params'] = json.dumps(labels_json)
+
+
+    original_model.save("model_metadata.mlmodel")
+if 0:
+    original_model = torch.jit.trace(original_model, input)
+    compile_spec = model_spec()
+    mlmodel = torch._C._jit_to_backend("coreml", original_model, compile_spec)
+    mlmodel._save_for_lite_interpreter("./mobilenetv2_coreml.ptl")
