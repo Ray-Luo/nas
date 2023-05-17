@@ -70,126 +70,124 @@ def depthwise_conv(in_c, out_c, k=3, s=1, p=0):
     )
 
 
-class InvertedResidualBlock(nn.Module):
-    def __init__(self, inp, oup, stride, expansion, use_se=False, use_hs=False):
-        super(InvertedResidualBlock, self).__init__()
+class InvertedResidualBase(nn.Module):
+    def __init__(
+        self,
+        inp,
+        oup,
+        stride,
+        hidden_dim,
+        use_hs=True,
+        use_se=True,
+    ):
+        super(InvertedResidualBase, self).__init__()
         assert stride in [1, 2]
 
-        hidden_dim = expansion * inp
+        self.oup = oup
 
         self.identity = stride == 1 and inp == oup
 
-        if inp == hidden_dim:
-            self.conv = nn.Sequential(
-                # dw
-                nn.Conv2d(
-                    hidden_dim,
-                    hidden_dim,
-                    3,
-                    stride,
-                    (3 - 1) // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # Squeeze-and-Excite
-                SELayer(hidden_dim) if use_se else nn.Identity(),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
-        else:
-            self.conv = nn.Sequential(
-                # pw
-                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # dw
-                nn.Conv2d(
-                    hidden_dim,
-                    hidden_dim,
-                    3,
-                    stride,
-                    (3 - 1) // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                # Squeeze-and-Excite
-                SELayer(hidden_dim) if use_se else nn.Identity(),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
+        self.if_pw = hidden_dim == inp
+
+        self.act = h_swish() if use_hs else nn.ReLU(inplace=True)
+
+        self.se = SELayer(hidden_dim) if use_se else nn.Identity()
+
+        self.pw = nn.Sequential(
+            nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+        )
+
+        self.pw_linear = nn.Sequential(
+            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(oup),
+        )
 
     def forward(self, x):
+        # point_wise conv
+        if not self.if_pw:
+            pw_out = self.pw(x)
+            out = self.act(pw_out)
+        else:
+            out = x
+
+        # depthwise conv
+        dw_out = self.dw(out)
+        out = self.act(dw_out)
+        out = self.se(out)
+
+        # pointwise linear projection
+        pwl_out = self.pw_linear(out)
+
         if self.identity:
-            return x + self.conv(x)
+            return x + pwl_out
         else:
-            return self.conv(x)
+            return pwl_out
 
 
-class UpInvertedResidualBlock(nn.Module):
-    def __init__(self, inp, oup, stride=2, expansion=6, use_se=False, use_hs=False):
-        super(UpInvertedResidualBlock, self).__init__()
-        assert stride in [1, 2]
+class InvertedResidualBlock(InvertedResidualBase):
+    def __init__(
+        self,
+        inp,
+        oup,
+        stride,
+        hidden_dim,
+        use_hs=True,
+        use_se=True,
+    ):
+        super().__init__(
+            inp,
+            oup,
+            stride,
+            hidden_dim,
+            use_hs,
+            use_se,
+        )
+        self.dw = nn.Sequential(
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                3,
+                stride,
+                (3 - 1) // 2,
+                groups=hidden_dim,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+        )
 
-        hidden_dim = expansion * inp
 
-        self.identity = stride == 1 and inp == oup
-
-        if inp == hidden_dim:
-            self.conv = nn.Sequential(
-                # dw
-                nn.ConvTranspose2d(
-                    hidden_dim,
-                    hidden_dim,
-                    4,
-                    stride,
-                    (4 - 1) // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # Squeeze-and-Excite
-                SELayer(hidden_dim) if use_se else nn.Identity(),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
-        else:
-            self.conv = nn.Sequential(
-                # pw
-                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # dw
-                nn.ConvTranspose2d(
-                    hidden_dim,
-                    hidden_dim,
-                    4,
-                    stride,
-                    (4 - 1) // 2,
-                    groups=hidden_dim,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                # Squeeze-and-Excite
-                SELayer(hidden_dim) if use_se else nn.Identity(),
-                h_swish() if use_hs else nn.ReLU(inplace=True),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
-
-    def forward(self, x):
-        if self.identity:
-            return x + self.conv(x)
-        else:
-            return self.conv(x)
+class UpInvertedResidualBlock(InvertedResidualBase):
+    def __init__(
+        self,
+        inp,
+        oup,
+        stride,
+        hidden_dim,
+        use_hs=True,
+        use_se=True,
+    ):
+        super().__init__(
+            inp,
+            oup,
+            stride,
+            hidden_dim,
+            use_hs,
+            use_se,
+        )
+        self.dw = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                3,
+                1,
+                (4 - 1) // 2,
+                groups=hidden_dim,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+        )
 
 
 class UNetMobileNetv3(nn.Module):
@@ -201,60 +199,62 @@ class UNetMobileNetv3(nn.Module):
         super(UNetMobileNetv3, self).__init__()
         self.out_size = out_size
 
-        expansion = 6
-
         # encoding arm
         self.conv3x3 = self.depthwise_conv(3, 16, p=1, s=2)
-        self.irb_bottleneck1 = self.irb_bottleneck(16, 24, 1, 1, 1)
-        self.irb_bottleneck2 = self.irb_bottleneck(24, 32, 2, 2, expansion)
-        self.irb_bottleneck3 = self.irb_bottleneck(32, 48, 3, 2, expansion)
-        self.irb_bottleneck4 = self.irb_bottleneck(48, 96, 4, 2, expansion)
-        self.irb_bottleneck5 = self.irb_bottleneck(96, 128, 4, 2, expansion)
-        self.irb_bottleneck6 = self.irb_bottleneck(128, 256, 3, 1, expansion)
-        self.irb_bottleneck7 = self.irb_bottleneck(256, 320, 1, 2, expansion)
+        self.irb_bottleneck1 = nn.Sequential(
+            InvertedResidualBlock(16, 16, 1, hidden_dim=62),
+        )
+        self.irb_bottleneck2 = nn.Sequential(
+            InvertedResidualBlock(16, 21, 2, hidden_dim=93),
+        )
+        self.irb_bottleneck3 = nn.Sequential(
+            InvertedResidualBlock(21, 31, 2, hidden_dim=127),
+            InvertedResidualBlock(31, 31, 1, hidden_dim=193),
+        )
+        self.irb_bottleneck4 = nn.Sequential(
+            InvertedResidualBlock(31, 63, 2, hidden_dim=190),
+            InvertedResidualBlock(63, 63, 1, hidden_dim=385),
+        )
+        self.irb_bottleneck5 = nn.Sequential(
+            InvertedResidualBlock(63, 84, 2, hidden_dim=382, use_hs=False),
+            InvertedResidualBlock(84, 84, 1, hidden_dim=513, use_hs=False),
+        )
+        self.irb_bottleneck6 = nn.Sequential(
+            InvertedResidualBlock(84, 169, 2, hidden_dim=507, use_hs=False),
+        )
+        self.irb_bottleneck7 = nn.Sequential(
+            InvertedResidualBlock(169, 209, 1, hidden_dim=1039),
+        )
         # decoding arm
-        self.D_irb1 = self.irb_bottleneck(320, 128, 1, 2, expansion, True)
-        self.D_irb2 = self.irb_bottleneck(128, 96, 1, 2, expansion, True)
-        self.D_irb3 = self.irb_bottleneck(96, 48, 1, 2, expansion, True)
-        self.D_irb4 = self.irb_bottleneck(48, 32, 1, 2, expansion, True)
-        self.D_irb5 = self.irb_bottleneck(32, 24, 1, 2, expansion, True)
-        self.D_irb6 = self.irb_bottleneck(24, 16, 1, 2, expansion, True)
-        self.D_irb7 = self.irb_bottleneck(16, 3, 1, 1, expansion, False)
+        self.D_irb1 = nn.Sequential(
+            UpInvertedResidualBlock(209, 84, 2, hidden_dim=1291),
+        )
+        self.D_irb2 = nn.Sequential(
+            UpInvertedResidualBlock(84, 63, 2, hidden_dim=516),
+        )
+        self.D_irb3 = nn.Sequential(
+            UpInvertedResidualBlock(63, 31, 2, hidden_dim=378),
+        )
+        self.D_irb4 = nn.Sequential(
+            UpInvertedResidualBlock(31, 21, 2, hidden_dim=190),
+        )
+        self.D_irb5 = nn.Sequential(
+            UpInvertedResidualBlock(21, 16, 2, hidden_dim=125),
+        )
+        self.D_irb6 = nn.Sequential(
+            UpInvertedResidualBlock(16, 16, 2, hidden_dim=93),
+        )
+        self.D_irb7 = nn.Sequential(
+            InvertedResidualBlock(16, 3, 1, hidden_dim=60),
+        )
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
-        """
-        optimized convolution by combining depthwise convolution and
-        pointwise convolution.
-        """
         conv = nn.Sequential(
             nn.Conv2d(in_c, in_c, kernel_size=k, padding=p, groups=in_c, stride=s),
             nn.BatchNorm2d(num_features=in_c),
             nn.ReLU6(inplace=True),
             nn.Conv2d(in_c, out_c, kernel_size=1),
         )
-        return conv
-
-    def irb_bottleneck(self, in_c, out_c, n, s, t, d=False):
-        """
-        create a series of inverted residual blocks.
-        """
-        convs = []
-        if d:
-            xx = UpInvertedResidualBlock(in_c, out_c, s, t)
-            convs.append(xx)
-            if n > 1:
-                for _ in range(1, n):
-                    xx = UpInvertedResidualBlock(out_c, out_c, 1, t)
-                    convs.append(xx)
-            conv = nn.Sequential(*convs)
-        else:
-            xx = InvertedResidualBlock(in_c, out_c, s, t)
-            convs.append(xx)
-            if n > 1:
-                for _ in range(1, n):
-                    xx = InvertedResidualBlock(out_c, out_c, 1, t)
-                    convs.append(xx)
-            conv = nn.Sequential(*convs)
         return conv
 
     def preprocess(self, input):

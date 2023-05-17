@@ -1,6 +1,7 @@
 import os
 import torch
-from unet_mobilenetv3_small import InvertedResidualBlock, UNetMobileNetv3, UpInvertedResidualBlock
+from dynamic_model_res2 import UNetMobileNetv3
+from gfpgan import GFPGAN
 import torch.nn as nn
 import torch.quantization
 import io
@@ -107,8 +108,16 @@ pretrained_checkpoint_path = "./last_big.ckpt"
 checkpoint = torch.load(
     pretrained_checkpoint_path,
     map_location=lambda storage, loc: storage,
-)
-original_model.load_state_dict(checkpoint)
+)["state_dict"]
+filtered_checkpoint = {}
+for key, value in checkpoint.items():
+    target = "net_student."
+    if target in key:
+        filtered_checkpoint[key.replace(target, "")] = value
+
+model_dict = original_model.state_dict()
+model_dict.update(filtered_checkpoint)
+original_model.load_state_dict(filtered_checkpoint)
 original_model = original_model.cpu()
 original_model.eval()
 
@@ -136,8 +145,6 @@ if 0:
     model.save(coreml_filename)
 
 if 1:
-    scale = 1.0 / (2.0 * 255.0)
-    bias = [0.5, 0.5, 0.5]
 
     original_model = torch.jit.trace(original_model, input)
 
@@ -151,17 +158,17 @@ if 1:
         scale=1.0, bias=0)],
     )
 
-    original_model.save("model_no_metadata.mlmodel")
+    # original_model.save("model_no_metadata.mlmodel")
 
-    original_model = ct.models.MLModel("model_no_metadata.mlmodel")
+    # original_model = ct.models.MLModel("model_no_metadata.mlmodel")
 
-    original_model.user_defined_metadata["com.apple.coreml.model.preview.type"] = "faceEnhancer"
-    import json
-    labels_json = {"labels": ["background", "aeroplane", "bicycle", "bird", "board", "bottle", "bus", "car", "cat", "chair", "cow", "diningTable", "dog", "horse", "motorbike", "person", "pottedPlant", "sheep", "sofa", "train", "tvOrMonitor"]}
-    original_model.user_defined_metadata['com.apple.coreml.model.preview.params'] = json.dumps(labels_json)
+    # original_model.user_defined_metadata["com.apple.coreml.model.preview.type"] = "faceEnhancer"
+    # import json
+    # labels_json = {"labels": ["background", "aeroplane", "bicycle", "bird", "board", "bottle", "bus", "car", "cat", "chair", "cow", "diningTable", "dog", "horse", "motorbike", "person", "pottedPlant", "sheep", "sofa", "train", "tvOrMonitor"]}
+    # original_model.user_defined_metadata['com.apple.coreml.model.preview.params'] = json.dumps(labels_json)
 
 
-    original_model.save("model_metadata.mlmodel")
+    original_model.save("model_metadata_big.mlmodel")
 if 0:
     original_model = torch.jit.trace(original_model, input)
     compile_spec = model_spec()

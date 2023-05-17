@@ -1,6 +1,7 @@
 
 import torch.nn as nn
 import torch
+# from gfpgan import GFPGAN
 from dynamic_model_res2 import UNetMobileNetv3
 
 
@@ -9,8 +10,9 @@ from dynamic_model_res2 import UNetMobileNetv3
 target = torch.randn(1,3,512,512)
 input = torch.randn(1, 3, 512, 512)
 model = UNetMobileNetv3(512)
+# model = GFPGAN(512)
 
-pretrained_checkpoint_path = "./last.ckpt"
+pretrained_checkpoint_path = "./last_big.ckpt"
 checkpoint = torch.load(
     pretrained_checkpoint_path,
     map_location=lambda storage, loc: storage,
@@ -18,6 +20,7 @@ checkpoint = torch.load(
 filtered_checkpoint = {}
 for key, value in checkpoint.items():
     target = "net_student."
+    print(key)
     if target in key:
         filtered_checkpoint[key.replace(target, "")] = value
 
@@ -38,7 +41,7 @@ def to_onnx(model, input, output_dir):
     ops = torch.jit.export_opnames(m_script)
     print(ops)
     m_script._save_for_lite_interpreter(
-        os.path.join(output_dir, "latest.ptl")
+        os.path.join(output_dir, "latest_big.ptl")
     )
 
 to_onnx(model, input,  "./")
