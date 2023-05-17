@@ -107,26 +107,21 @@ pretrained_checkpoint_path = "./last_big.ckpt"
 checkpoint = torch.load(
     pretrained_checkpoint_path,
     map_location=lambda storage, loc: storage,
-)["state_dict"]
-filtered_checkpoint = {}
-for key, value in checkpoint.items():
-    target = "net_student."
-    if target in key:
-        filtered_checkpoint[key.replace(target, "")] = value
-
-model_dict = original_model.state_dict()
-model_dict.update(filtered_checkpoint)
-original_model.load_state_dict(filtered_checkpoint)
+)
+original_model.load_state_dict(checkpoint)
 original_model = original_model.cpu()
 original_model.eval()
 
 output_dir = "./"
-input = cv2.imread("/data/sandcastle/boxes/fbsource/fbcode/compphoto/media_quality/face_restoration/gfpgan/test/1.png", cv2.IMREAD_COLOR)
-cv2.resize(input, (512, 512))
+input = cv2.imread("/data/sandcastle/boxes/fbsource/fbcode/compphoto/media_quality/face_restoration/gfpgan/myself.png", cv2.IMREAD_COLOR)
+input = cv2.resize(input, (512, 512))
 input = img2tensor(input / 255.0, bgr2rgb=True, float32=True)
-normalize(input, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
+input = normalize(input, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
 input = input.unsqueeze(0)
 print(input.shape)
+output = original_model(input)
+output = tensor2img(output, rgb2bgr=True, min_max=(-1, 1))
+cv2.imwrite("./enhanced.png", output)
 
 import coremltools as ct
 if 0:
@@ -141,7 +136,7 @@ if 0:
     model.save(coreml_filename)
 
 if 1:
-    scale = 1.0 / (255.0)
+    scale = 1.0 / (2.0 * 255.0)
     bias = [0.5, 0.5, 0.5]
 
     original_model = torch.jit.trace(original_model, input)
@@ -149,10 +144,9 @@ if 1:
     original_model = ct.convert(
         original_model,
         inputs=[ct.ImageType(name="input", shape=input.shape,
-        scale=scale, bias=bias)],
+        # scale=scale, bias=bias,
+        color_layout=ct.colorlayout.RGB)],
         compute_units=ct.ComputeUnit.CPU_AND_NE,
-        # convert_to="mlprogram",
-        # compute_precision=ct.precision.FLOAT32,
         outputs=[ct.ImageType(name="output",
         scale=1.0, bias=0)],
     )
