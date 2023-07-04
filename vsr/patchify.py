@@ -40,22 +40,22 @@ def main():
     opt['n_thread'] = 20
     opt['compression_level'] = 3
 
-    opt['input_folder'] = '/home/luoleyouluole/reds/train'
-    opt['save_folder'] = '/home/luoleyouluole/reds/patch/train_patchify'
+    opt['input_folder'] = '/home/luoleyouluole/reds_split/train'
+    opt['save_folder'] = '/home/luoleyouluole/reds_split/train_patchify_256'
     opt['crop_size'] = 256
     opt['step'] = 128
     opt['thresh_size'] = 0
     extract_subimages(opt)
 
-    opt['input_folder'] = '/home/luoleyouluole/reds/valid'
-    opt['save_folder'] = '/home/luoleyouluole/reds/patch/valid_patchify'
+    opt['input_folder'] = '/home/luoleyouluole/reds_split/valid'
+    opt['save_folder'] = '/home/luoleyouluole/reds_split/valid_patchify_256'
     opt['crop_size'] = 256
     opt['step'] = 128
     opt['thresh_size'] = 0
     extract_subimages(opt)
 
-    opt['input_folder'] = '/home/luoleyouluole/reds/test'
-    opt['save_folder'] = '/home/luoleyouluole/reds/patch/test_patchify'
+    opt['input_folder'] = '/home/luoleyouluole/reds_split/test'
+    opt['save_folder'] = '/home/luoleyouluole/reds_split/test_patchify_256'
     opt['crop_size'] = 256
     opt['step'] = 128
     opt['thresh_size'] = 0

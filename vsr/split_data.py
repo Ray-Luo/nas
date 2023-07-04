@@ -6,11 +6,11 @@ import random
 seed_value = 42
 random.seed(seed_value)
 
-PERCENT = [0.6, 0.2, 0.2]
+PERCENT = [0.8, 0.1, 0.1]
 
-train_path = "/home/luoleyouluole/reds/train"
-valid_path = "/home/luoleyouluole/reds/valid"
-test_path = "/home/luoleyouluole/reds/test"
+train_path = "/home/luoleyouluole/reds_split/train"
+valid_path = "/home/luoleyouluole/reds_split/valid"
+test_path = "/home/luoleyouluole/reds_split/test"
 
 for folder in tqdm([train_path, valid_path, test_path]):
     if os.path.exists(folder):
@@ -19,7 +19,7 @@ for folder in tqdm([train_path, valid_path, test_path]):
     os.mkdir(folder)
 
 folder_list = [
-    "/home/luoleyouluole/val",
+    "/home/luoleyouluole/reds_all/",
 ]
 folder_list.sort()
 
@@ -35,13 +35,13 @@ for folder_path in tqdm(folder_list):
     test = file_list[number_train:number_train + number_valid]
     valid = file_list[number_train + number_valid:]
 
-    for i in train:
+    for i in tqdm(train):
         shutil.copy(os.path.join(folder_path, i), train_path)
 
-    for i in valid:
+    for i in tqdm(valid):
         shutil.copy(os.path.join(folder_path, i), valid_path)
 
-    for i in test:
+    for i in tqdm(test):
         shutil.copy(os.path.join(folder_path, i), test_path)
 
 
