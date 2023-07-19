@@ -13,3 +13,4 @@ logs_cifar10_legacy/
 logs_unet/
 unet_checkpoints/
 *.cvs
+*.png
