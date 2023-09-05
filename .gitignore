@@ -14,3 +14,7 @@ logs_unet/
 unet_checkpoints/
 *.cvs
 *.png
+*.exr
+*.zip
+*.hdr
+data_collection/rit_hdr4000
