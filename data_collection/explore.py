@@ -81,7 +81,7 @@ if 0:
     print("Best Distance (D):", best_distance, "millimeters")
 
 
-if 1:
+if 0:
     import OpenEXR
     import Imath
     import numpy as np
@@ -268,3 +268,12 @@ if 0:
     output_exr.close()
 
     print(f'YUV420 image saved as {output_file}')
+
+if 1:
+    from bsrgan import BSRGAN
+    import cv2
+
+    model = BSRGAN(model_path='kadirnar/BSRGANx2', device='cuda:0', hf_model=True)
+    model.save = True
+
+    pred = model.predict(img_path='/home/luoleyouluole/nas/data_collection/35cm.png')
